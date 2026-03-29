@@ -12,3 +12,5 @@ app.include_router(order_router)
 #.venv\Scripts\activate ativa o ambiente virtual
 #uvicorn main:app --reload inicia o servidor
 #pip install fastapi uvicorn sqlalchemy passlib[bcrypt] python-jose[cryptography] python-dotenv python-multipart bibliotecas
+#alembic revision --autogenerate -m "migracao inicial" para toda alteração no BD 
+#alembic upgrade head para subir as alterações
