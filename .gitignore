@@ -216,3 +216,4 @@ __pycache__/
 *.pyc
 *.tsbuildinfo
 apps/python-backend/artifacts/
+treinamento-ml/
