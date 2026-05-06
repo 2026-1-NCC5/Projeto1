@@ -1,7 +1,10 @@
 import sys
 import os
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+bd_path = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+backend_path = os.path.dirname(bd_path)
+sys.path.insert(0, bd_path)
+sys.path.insert(0, backend_path)
 
 from models.database import SessionLocal, engine
 from models.usuario import Usuario
@@ -12,6 +15,7 @@ from models.alimento import Alimento
 from models.sessao import Sessao
 from models.item_declarado import ItemDeclarado
 from models.deteccao import Deteccao
+import api.core.security as security
 
 
 def seed_grupos_alimentos(db):
@@ -75,6 +79,29 @@ def seed_grupos_alimentos(db):
     print("✅ Grupos de alimentos inseridos com sucesso.")
 
 
+def seed_usuarios_e_equipes(db):
+    existente_user = db.query(Usuario).filter_by(email="nutricionista").first()
+    if not existente_user:
+        usuario = Usuario(
+            nome="Nutricionista Teste",
+            email="nutricionista",
+            senha_hash=security.get_password_hash("123456"),
+            perfil="operador"
+        )
+        db.add(usuario)
+        
+    existente_grupo = db.query(Grupo).filter_by(id=1).first()
+    if not existente_grupo:
+        grupo = Grupo(
+            nome="Equipe Alfa",
+            descricao="Equipe de teste"
+        )
+        db.add(grupo)
+        
+    db.commit()
+    print("✅ Usuário (nutricionista / 123456) e Equipe inicial inseridos.")
+
+
 def seed_alimentos(db):
     # Busca IDs dos grupos
     graos = db.query(GrupoAlimento).filter_by(nome="Grãos").first()
@@ -124,6 +151,7 @@ def main():
     try:
         seed_grupos_alimentos(db)
         seed_alimentos(db)
+        seed_usuarios_e_equipes(db)
         print("🎉 Seed data concluído!")
     except Exception as e:
         db.rollback()

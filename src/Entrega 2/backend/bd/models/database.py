@@ -2,7 +2,9 @@ import os
 from sqlalchemy import create_engine, event
 from sqlalchemy.orm import sessionmaker, declarative_base
 
-DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///abraceai.db")
+DB_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+DB_PATH = os.path.join(DB_DIR, "abraceai.db")
+DATABASE_URL = os.getenv("DATABASE_URL", f"sqlite:///{DB_PATH.replace('\\\\', '/')}")
 
 engine = create_engine(
     DATABASE_URL,
