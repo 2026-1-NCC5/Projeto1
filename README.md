@@ -1,5 +1,4 @@
-# Projeto 01 - 🍲 AbraceAI
-Projeto 01
+# Projeto 01 - 🫂 AbraceAI
 ---
 
 ## 🏫 FECAP - Fundação de Comércio Álvares Penteado
@@ -29,14 +28,33 @@ O Lideranças Empáticas (LE) é uma iniciativa que une impacto social e educaç
 ## 🗂️ Estrutura de pastas
 
 ```
-├── 🗂️ documentos/
+├── 🗂️ Documentos/
 │   ├── 📁 Entrega01
 │   │  └── 📂 Algebra_Linear
 │   │  └── 📂 Inteligência_Artifical
+│   │  └── 📂 Projeto_Interdisciplinar
+│   │  └── 📂 Psicologia_Liderança_SoftSkills
 │   │  └── 📂 Sistemas_Operacionais
-│   │  └── 📂 Psicologia_Liderança
-│   │  └── 📂 Projeto
+│   ├── 📁 Entrega02
+│   │  └── 📂 Algebra_Linear
+│   │  └── 📂 Inteligência_Artifical
+│   │  └── 📂 Projeto_Interdisciplinar
+│   │  └── 📂 Psicologia_Liderança_SoftSkills
+│   │  └── 📂 Sistemas_Operacionais
+├── 🗂️ Imagens/
+├── 🗂️ src/
+│   ├── 📁 Entrega02
+│   │  └── 📂 backend
+│   │  └── 📂 frontend
 └── 📄 readme.md
 ```
 
 README.MD: Arquivo que serve como guia e explicação geral sobre o projeto.
+
+Além disso, há outras pastas com os devidos arquivos em cada período de entrega:
+
+⛲ [src](./src): Pasta que contém arquivos do frontend e backend do AbraceAI, divididos por entregas conforme cronograma da FECAP.
+
+📄 [Documentos](/Documentos): Devidos documentos do projeto e arquivos relacionados as matérias de Algebra Linear, Inteligência Artificial, Projeto Interdisciplinar, Psicologia e Sistemas Operacionais.
+
+📸 [Imagens](/Imagens): Reunião de imagens utilizadas no projeto.
