@@ -1,0 +1,94 @@
+erDiagram
+    USUARIO {
+        int id PK
+        string nome
+        string email UK
+        string senha_hash
+        string perfil "admin ou operador"
+        boolean ativo
+        datetime criado_em
+    }
+
+    GRUPO {
+        int id PK
+        string nome
+        string descricao
+        string status "pendente, ativo ou finalizado"
+        datetime criado_em
+        datetime atualizado_em
+    }
+
+    ALUNO {
+        int id PK
+        string nome
+        string ra UK
+        int grupo_id FK
+        boolean ativo
+        datetime criado_em
+    }
+
+    GRUPO_ALIMENTO {
+        int id PK
+        string nome UK
+        string descricao
+        string cor "hex para UI"
+        string icone "emoji"
+        datetime criado_em
+    }
+
+    ALIMENTO {
+        int id PK
+        string nome UK
+        int grupo_alimento_id FK
+        numeric peso_padrao_kg
+        string unidade
+        string classe_yolo
+        string descricao
+        boolean ativo
+        datetime criado_em
+    }
+
+    SESSAO {
+        int id PK
+        int grupo_id FK
+        int usuario_id FK
+        datetime inicio
+        datetime fim
+        string status "ativa, finalizada ou cancelada"
+        numeric total_kg
+        int total_itens
+        datetime criado_em
+    }
+
+    ITEM_DECLARADO {
+        int id PK
+        int grupo_id FK
+        string nome_alimento
+        string marca
+        int quantidade
+        numeric peso_declarado_kg
+        string observacao
+        datetime criado_em
+    }
+
+    DETECCAO {
+        int id PK
+        int sessao_id FK
+        int alimento_id FK
+        int alimento_id_original FK
+        numeric peso_kg
+        int quantidade
+        numeric confianca "0.00 a 1.00"
+        string imagem_path
+        boolean corrigido_manualmente
+        datetime criado_em
+    }
+
+    GRUPO ||--o{ ALUNO : "contém"
+    GRUPO ||--o{ SESSAO : "possui"
+    GRUPO ||--o{ ITEM_DECLARADO : "declara"
+    USUARIO ||--o{ SESSAO : "opera"
+    GRUPO_ALIMENTO ||--o{ ALIMENTO : "categoriza"
+    ALIMENTO ||--o{ DETECCAO : "detectado em"
+    ALIMENTO ||--o{ DETECCAO : "original de"
+    SESSAO ||--o{ DETECCAO : "contém"
