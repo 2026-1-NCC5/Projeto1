@@ -19,7 +19,16 @@ from bd.models.deteccao import Deteccao
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from api.routers import auth, deteccoes, sessoes, relatorios
+from fastapi.staticfiles import StaticFiles
+from api.routers import (
+    deteccoes,
+    sessoes,
+    relatorios,
+    grupos,
+    alimentos,
+    itens_declarados,
+    ws_auditoria,
+)
 
 app = FastAPI(
     title=settings.PROJECT_NAME,
@@ -35,10 +44,22 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-app.include_router(auth.router, prefix=f"{settings.API_V1_STR}/auth", tags=["auth"])
+app.include_router(grupos.router, prefix=f"{settings.API_V1_STR}/grupos", tags=["grupos"])
+app.include_router(alimentos.router, prefix=f"{settings.API_V1_STR}/alimentos", tags=["alimentos"])
+app.include_router(itens_declarados.router, prefix=f"{settings.API_V1_STR}/itens-declarados", tags=["itens-declarados"])
 app.include_router(sessoes.router, prefix=f"{settings.API_V1_STR}/sessoes", tags=["sessoes"])
 app.include_router(deteccoes.router, prefix=f"{settings.API_V1_STR}/deteccoes", tags=["deteccoes"])
 app.include_router(relatorios.router, prefix=f"{settings.API_V1_STR}/relatorios", tags=["relatorios"])
+# WebSocket sob /ws (sem prefixo /api/v1, padrão do plano)
+app.include_router(ws_auditoria.router, prefix="/ws", tags=["ws-auditoria"])
+
+# Servir evidências (JPEGs gravados pelo evidencia_service) sob /evidencias/...
+os.makedirs(settings.EVIDENCIA_DIR, exist_ok=True)
+app.mount(
+    "/evidencias",
+    StaticFiles(directory=settings.EVIDENCIA_DIR),
+    name="evidencias",
+)
 
 @app.get("/")
 def root():

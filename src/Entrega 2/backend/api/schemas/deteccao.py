@@ -11,6 +11,11 @@ class DeteccaoBase(BaseModel):
 
 class DeteccaoCreate(DeteccaoBase):
     sessao_id: int
+    alimento_id_original: Optional[int] = None
+    fonte: Optional[str] = "YOLO"
+    gemini_concorda: Optional[bool] = None
+    gemini_classe: Optional[str] = None
+    gemini_justificativa: Optional[str] = None
 
 class DeteccaoCorrecao(BaseModel):
     alimento_id: int
@@ -20,6 +25,10 @@ class DeteccaoResponse(DeteccaoBase):
     sessao_id: int
     alimento_id_original: Optional[int] = None
     corrigido_manualmente: bool
+    fonte: str
+    gemini_concorda: Optional[bool] = None
+    gemini_classe: Optional[str] = None
+    gemini_justificativa: Optional[str] = None
     criado_em: datetime
 
     class Config:

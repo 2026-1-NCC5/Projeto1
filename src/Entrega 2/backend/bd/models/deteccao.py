@@ -23,6 +23,12 @@ class Deteccao(Base):
     confianca: Mapped[float] = mapped_column(Numeric(3, 2), nullable=True)
     imagem_path: Mapped[str] = mapped_column(String(500), nullable=True)
     corrigido_manualmente: Mapped[bool] = mapped_column(Boolean, default=False)
+    # Origem da classificação final: YOLO, GEMINI, MANUAL ou DESCONHECIDO
+    fonte: Mapped[str] = mapped_column(String(20), default="YOLO")
+    # Validação cruzada com o Gemini (campos opcionais — preenchidos só quando há retorno)
+    gemini_concorda: Mapped[Optional[bool]] = mapped_column(Boolean, nullable=True)
+    gemini_classe: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
+    gemini_justificativa: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
     criado_em: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
     sessao: Mapped["Sessao"] = relationship("Sessao", back_populates="deteccoes")

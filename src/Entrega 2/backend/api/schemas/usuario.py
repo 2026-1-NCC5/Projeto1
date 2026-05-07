@@ -9,7 +9,7 @@ class UsuarioBase(BaseModel):
     ativo: bool = True
 
 class UsuarioCreate(UsuarioBase):
-    senha: str
+    pass
 
 class UsuarioResponse(UsuarioBase):
     id: int

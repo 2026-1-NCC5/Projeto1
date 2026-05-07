@@ -168,6 +168,12 @@ ENV/
 env.bak/
 venv.bak/
 
+# AbraceAI: evidências geradas em runtime e DB local
+src/Entrega 2/backend/evidencias/
+src/Entrega 2/backend/bd/abraceai.db-journal
+src/Entrega 2/backend/bd/abraceai.db-shm
+src/Entrega 2/backend/bd/abraceai.db-wal
+
 # Spyder project settings
 .spyderproject
 .spyproject

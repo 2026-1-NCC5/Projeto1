@@ -7,15 +7,17 @@ class SessaoBase(BaseModel):
     grupo_id: int
 
 class SessaoCreate(SessaoBase):
-    pass
+    usuario_id: Optional[int] = None
 
 class SessaoResponse(SessaoBase):
     id: int
-    usuario_id: int
-    data_inicio: datetime
-    data_fim: Optional[datetime] = None
+    usuario_id: Optional[int] = None
+    inicio: datetime
+    fim: Optional[datetime] = None
     status: str
-    
+    total_kg: float = 0
+    total_itens: int = 0
+
     deteccoes: List[DeteccaoResponse] = []
 
     class Config:

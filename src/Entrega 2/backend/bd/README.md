@@ -20,8 +20,8 @@ Banco de dados relacional SQLite para o sistema AbraceAI, responsável por geren
 ```
 backend/
 ├── requirements.txt          # Dependências Python
-├── alembic.ini              # Configuração do Alembic
-├── abraceai.db              # Banco SQLite (não versionado)
+├── bd/alembic.ini           # Configuração do Alembic
+├── bd/abraceai.db           # Banco SQLite local
 ├── .gitignore               # Ignora *.db, __pycache__, etc.
 ├── models/                  # Models SQLAlchemy
 │   ├── __init__.py
@@ -40,7 +40,9 @@ backend/
 │   ├── README
 │   └── versions/
 │       ├── 40469500dd70_initial_schema.py
-│       └── 8172a49d6648_add_indexes.py
+│       ├── 8172a49d6648_add_indexes.py
+│       ├── c1f3e9a4b201_add_gemini_fields_deteccoes.py
+│       └── 9d2a0b4f8c31_remove_auth_password_from_usuarios.py
 └── seeds/
     ├── seed_data.py         # Popula dados iniciais
     └── validate_db.py       # Valida estrutura do banco
@@ -61,7 +63,7 @@ backend/
 | `itens_declarados` | Declaração manual do que o grupo arrecadou |
 | `deteccoes` | Detecções da câmera/YOLO + correção manual |
 
-> Veja o diagrama completo em `diagrama-db.mermaid`.
+> Veja o diagrama completo em `diagrama-db.mmd`.
 
 ---
 
@@ -80,30 +82,31 @@ O banco já vem criado e populado no repositório. Caso precise recriar do zero:
 
 ```bash
 # Apagar banco existente
-rm abraceai.db
+rm bd/abraceai.db
 
 # Aplicar todas as migrations
-alembic upgrade head
+./.venv/bin/alembic -c bd/alembic.ini upgrade head
 ```
 
 ### 3. Popular Seed Data
 
 ```bash
-python seeds/seed_data.py
+./.venv/bin/python bd/seeds/seed_data.py
 ```
 
 Saída esperada:
 ```
 🌱 Iniciando seed data...
 ✅ Grupos de alimentos inseridos com sucesso.
-✅ Alimentos iniciais inseridos com sucesso.
+✅ 15 alimentos (mapeando todas as classes YOLO) inseridos.
+✅ Usuário nutricionista e Equipe inicial inseridos.
 🎉 Seed data concluído!
 ```
 
 ### 4. Validar Banco
 
 ```bash
-python seeds/validate_db.py
+./.venv/bin/python bd/seeds/validate_db.py
 ```
 
 Saída esperada:
@@ -113,7 +116,7 @@ Saída esperada:
 ✅ Todas as 8 tabelas presentes.
 ✅ Foreign keys ativadas (PRAGMA foreign_keys=ON).
 ✅ Todos os 9 índices presentes.
-✅ Seed data OK (8 grupos, 3 alimentos).
+✅ Seed data OK (8 categorias, 15 alimentos YOLO e usuário PoC).
 ✅ Constraints verificadas.
 
 🎉 Banco de dados validado com sucesso!
@@ -125,11 +128,11 @@ Saída esperada:
 
 | Comando | Descrição |
 |---------|-----------|
-| `alembic revision --autogenerate -m "descricao"` | Cria nova migration a partir dos models |
-| `alembic upgrade head` | Aplica todas as migrations pendentes |
-| `alembic downgrade -1` | Reverte a última migration |
-| `alembic current` | Mostra a migration atual |
-| `alembic history` | Lista todas as migrations |
+| `./.venv/bin/alembic -c bd/alembic.ini revision --autogenerate -m "descricao"` | Cria nova migration a partir dos models |
+| `./.venv/bin/alembic -c bd/alembic.ini upgrade head` | Aplica todas as migrations pendentes em `bd/abraceai.db` |
+| `./.venv/bin/alembic -c bd/alembic.ini downgrade -1` | Reverte a última migration |
+| `./.venv/bin/alembic -c bd/alembic.ini current` | Mostra a migration atual |
+| `./.venv/bin/alembic -c bd/alembic.ini history` | Lista todas as migrations |
 
 ---
 
@@ -155,7 +158,7 @@ Para usar PostgreSQL em produção, defina:
 export DATABASE_URL="postgresql://user:pass@host:port/dbname"
 ```
 
-Se não definida, o padrão é `sqlite:///abraceai.db`.
+Se não definida, a aplicação usa `sqlite:///bd/abraceai.db`.
 
 ---
 
@@ -163,6 +166,7 @@ Se não definida, o padrão é `sqlite:///abraceai.db`.
 
 | Decisão | Justificativa |
 |---------|---------------|
+| `usuarios` sem senha | PoC sem autenticação; usuário registra operador/admin sem login |
 | `itens_declarados` vinculado a `grupos` | Declaração manual é feita **antes** da sessão de triagem |
 | `deteccoes` com `quantidade` | Usuário informa quantas unidades iguais existem, evitando passar o mesmo item várias vezes |
 | `deteccoes` com histórico de correção | `alimento_id_original` guarda o que o YOLO detectou vs. o que o operador corrigiu |
@@ -176,7 +180,8 @@ Se não definida, o padrão é `sqlite:///abraceai.db`.
 ### Grupos de Alimentos (8)
 Grãos 🌾 | Enlatados 🥫 | Massas 🍝 | Laticínios 🧀 | Óleos 🫒 | Farináceos 🌽 | Açúcar 🧂 | Café ☕
 
-### Alimentos Iniciais (3)
-- Arroz — 5.0 kg — classe YOLO: `arroz`
-- Feijão — 1.0 kg — classe YOLO: `feijao`
-- Café — 0.5 kg — classe YOLO: `cafe`
+### Alimentos Iniciais (15 classes YOLO)
+
+`achocolatado`, `acucar`, `arroz`, `atum_sardinha`, `biscoito`, `cafe`,
+`farinha_trigo`, `feijao`, `fuba`, `leite_condensado`, `leite_em_po`,
+`macarrao`, `molho_tomate`, `oleo`, `sal`.

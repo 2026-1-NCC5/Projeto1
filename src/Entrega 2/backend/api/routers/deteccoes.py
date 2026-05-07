@@ -1,10 +1,9 @@
 from typing import List
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
-from api.dependencies import get_db, get_current_active_user
+from api.dependencies import get_db
 from api.schemas.deteccao import DeteccaoCreate, DeteccaoResponse, DeteccaoCorrecao
 from bd.models.deteccao import Deteccao
-from bd.models.usuario import Usuario
 from bd.models.sessao import Sessao
 
 router = APIRouter()
@@ -25,12 +24,16 @@ def create_deteccao(
     db_obj = Deteccao(
         sessao_id=deteccao_in.sessao_id,
         alimento_id=deteccao_in.alimento_id,
-        alimento_id_original=deteccao_in.alimento_id,
+        alimento_id_original=deteccao_in.alimento_id_original or deteccao_in.alimento_id,
         peso_kg=deteccao_in.peso_kg,
         quantidade=deteccao_in.quantidade,
         confianca=deteccao_in.confianca,
         imagem_path=deteccao_in.imagem_path,
-        corrigido_manualmente=False
+        corrigido_manualmente=False,
+        fonte=deteccao_in.fonte or "YOLO",
+        gemini_concorda=deteccao_in.gemini_concorda,
+        gemini_classe=deteccao_in.gemini_classe,
+        gemini_justificativa=deteccao_in.gemini_justificativa,
     )
     db.add(db_obj)
     db.commit()
@@ -42,7 +45,6 @@ def corrigir_deteccao(
     id: int,
     correcao_in: DeteccaoCorrecao,
     db: Session = Depends(get_db),
-    current_user: Usuario = Depends(get_current_active_user)
 ):
     """
     Corrige manualmente uma classificação de alimento
@@ -53,6 +55,7 @@ def corrigir_deteccao(
     
     deteccao.alimento_id = correcao_in.alimento_id
     deteccao.corrigido_manualmente = True
+    deteccao.fonte = "MANUAL"
     
     db.add(deteccao)
     db.commit()

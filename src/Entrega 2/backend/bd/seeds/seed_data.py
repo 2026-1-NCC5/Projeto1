@@ -15,7 +15,6 @@ from models.alimento import Alimento
 from models.sessao import Sessao
 from models.item_declarado import ItemDeclarado
 from models.deteccao import Deteccao
-import api.core.security as security
 
 
 def seed_grupos_alimentos(db):
@@ -85,7 +84,6 @@ def seed_usuarios_e_equipes(db):
         usuario = Usuario(
             nome="Nutricionista Teste",
             email="nutricionista",
-            senha_hash=security.get_password_hash("123456"),
             perfil="operador"
         )
         db.add(usuario)
@@ -99,50 +97,62 @@ def seed_usuarios_e_equipes(db):
         db.add(grupo)
         
     db.commit()
-    print("✅ Usuário (nutricionista / 123456) e Equipe inicial inseridos.")
+    print("✅ Usuário nutricionista e Equipe inicial inseridos.")
 
 
 def seed_alimentos(db):
-    # Busca IDs dos grupos
-    graos = db.query(GrupoAlimento).filter_by(nome="Grãos").first()
-    cafe = db.query(GrupoAlimento).filter_by(nome="Café").first()
+    """Popula a tabela de alimentos com as 15 classes do modelo v3_final.pt.
 
-    alimentos = []
-    if graos:
-        alimentos.extend([
+    Cada classe YOLO vira exatamente um Alimento. Categorias agregadas
+    (Arroz / Feijão / Outros) saem via grupos_alimentos.
+    """
+    # Mapa: classe_yolo -> (nome PT-BR, nome do grupo_alimento, peso médio kg)
+    catalogo = [
+        ("arroz", "Arroz", "Grãos", 5.0),
+        ("feijao", "Feijão", "Grãos", 1.0),
+        ("acucar", "Açúcar", "Açúcar", 1.0),
+        ("sal", "Sal", "Açúcar", 1.0),
+        ("cafe", "Café", "Café", 0.5),
+        ("oleo", "Óleo", "Óleos", 0.9),
+        ("macarrao", "Macarrão", "Massas", 0.5),
+        ("farinha_trigo", "Farinha de Trigo", "Farináceos", 1.0),
+        ("fuba", "Fubá", "Farináceos", 1.0),
+        ("biscoito", "Biscoito", "Massas", 0.4),
+        ("achocolatado", "Achocolatado", "Laticínios", 0.4),
+        ("leite_em_po", "Leite em Pó", "Laticínios", 0.4),
+        ("leite_condensado", "Leite Condensado", "Laticínios", 0.4),
+        ("atum_sardinha", "Atum/Sardinha", "Enlatados", 0.17),
+        ("molho_tomate", "Molho de Tomate", "Enlatados", 0.34),
+    ]
+
+    # Cache de grupo_alimento por nome para evitar consultas repetidas
+    grupos_por_nome = {g.nome: g for g in db.query(GrupoAlimento).all()}
+
+    for classe_yolo, nome_pt, grupo_nome, peso_kg in catalogo:
+        grupo = grupos_por_nome.get(grupo_nome)
+        # Procura por nome PT-BR ou pela classe YOLO (idempotência forte)
+        existente = (
+            db.query(Alimento)
+            .filter((Alimento.nome == nome_pt) | (Alimento.classe_yolo == classe_yolo))
+            .first()
+        )
+        if existente:
+            # Garante que classe_yolo esteja preenchida em DBs antigos
+            if not existente.classe_yolo:
+                existente.classe_yolo = classe_yolo
+            continue
+        db.add(
             Alimento(
-                nome="Arroz",
-                grupo_alimento_id=graos.id,
-                peso_padrao_kg=5.0,
+                nome=nome_pt,
+                grupo_alimento_id=grupo.id if grupo else None,
+                peso_padrao_kg=peso_kg,
                 unidade="kg",
-                classe_yolo="arroz",
-            ),
-            Alimento(
-                nome="Feijão",
-                grupo_alimento_id=graos.id,
-                peso_padrao_kg=1.0,
-                unidade="kg",
-                classe_yolo="feijao",
-            ),
-        ])
-    if cafe:
-        alimentos.append(
-            Alimento(
-                nome="Café",
-                grupo_alimento_id=cafe.id,
-                peso_padrao_kg=0.5,
-                unidade="kg",
-                classe_yolo="cafe",
+                classe_yolo=classe_yolo,
             )
         )
 
-    for a in alimentos:
-        existente = db.query(Alimento).filter_by(nome=a.nome).first()
-        if not existente:
-            db.add(a)
-
     db.commit()
-    print("✅ Alimentos iniciais inseridos com sucesso.")
+    print(f"✅ {len(catalogo)} alimentos (mapeando todas as classes YOLO) inseridos.")
 
 
 def main():
