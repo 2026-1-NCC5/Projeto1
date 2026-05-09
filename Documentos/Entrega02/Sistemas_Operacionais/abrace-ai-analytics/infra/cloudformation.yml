@@ -1,0 +1,179 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  AbraceAI Analytics - PoC academica.
+  Sobe uma EC2 t3.micro Ubuntu 24.04 com Docker + docker compose,
+  clona o projeto e inicia containers via UserData.
+  Free Tier: 750h/mes de t3.micro + 750h/mes de IPv4 publico + 30 GB EBS.
+
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label: { default: "Acesso" }
+        Parameters: [KeyPairName, AllowedSshCidr, AllowedAppCidr]
+      - Label: { default: "Aplicacao" }
+        Parameters: [GitRepoUrl, GitRef, AppPort]
+      - Label: { default: "Instancia" }
+        Parameters: [InstanceType, VolumeSizeGb]
+
+Parameters:
+  KeyPairName:
+    Type: AWS::EC2::KeyPair::KeyName
+    Description: Nome da KeyPair EC2 ja criada (usada no `ssh -i .pem`)
+
+  AllowedSshCidr:
+    Type: String
+    Description: "CIDR autorizado a acessar SSH (ex.: 1.2.3.4/32). NUNCA use 0.0.0.0/0 em producao."
+    AllowedPattern: ^(\d{1,3}\.){3}\d{1,3}\/\d{1,2}$
+
+  AllowedAppCidr:
+    Type: String
+    Description: CIDR autorizado a acessar o dashboard (porta 8501). Recomendado mesmo IP do SSH.
+    AllowedPattern: ^(\d{1,3}\.){3}\d{1,3}\/\d{1,2}$
+
+  GitRepoUrl:
+    Type: String
+    Description: "URL do repositorio git (ex.: https://github.com/USER/projeto-1-abrace-ai.git)"
+    Default: ""
+
+  GitRef:
+    Type: String
+    Description: Branch/tag/commit do repo
+    Default: main
+
+  AppPort:
+    Type: Number
+    Default: 8501
+    MinValue: 1
+    MaxValue: 65535
+
+  InstanceType:
+    Type: String
+    Default: t3.micro
+    AllowedValues: [t2.micro, t3.micro, t3.small]
+    Description: t3.micro / t2.micro sao Free Tier (conta antiga). t3.small NAO eh Free Tier.
+
+  VolumeSizeGb:
+    Type: Number
+    Default: 12
+    MinValue: 8
+    MaxValue: 30
+    Description: Tamanho EBS gp3 (Free Tier ate 30 GB total)
+
+  UbuntuAmiSsmParameter:
+    Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
+    Default: /aws/service/canonical/ubuntu/server/24.04/stable/current/amd64/hvm/ebs-gp3/ami-id
+    Description: Resolve a AMI mais recente do Ubuntu 24.04 LTS via SSM Parameter (oficial Canonical)
+
+Resources:
+
+  AppSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: AbraceAI Analytics - SSH + dashboard restritos
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: !Ref AllowedSshCidr
+          Description: SSH restrito ao IP do operador
+        - IpProtocol: tcp
+          FromPort: !Ref AppPort
+          ToPort: !Ref AppPort
+          CidrIp: !Ref AllowedAppCidr
+          Description: Dashboard Streamlit
+      Tags:
+        - Key: Project
+          Value: abrace-ai-analytics
+        - Key: Owner
+          Value: academic-poc
+
+  AppInstance:
+    Type: AWS::EC2::Instance
+    Properties:
+      InstanceType: !Ref InstanceType
+      ImageId: !Ref UbuntuAmiSsmParameter
+      KeyName: !Ref KeyPairName
+      SecurityGroupIds:
+        - !Ref AppSecurityGroup
+      BlockDeviceMappings:
+        - DeviceName: /dev/sda1
+          Ebs:
+            VolumeType: gp3
+            VolumeSize: !Ref VolumeSizeGb
+            DeleteOnTermination: true
+            Encrypted: true
+      Tags:
+        - Key: Name
+          Value: abrace-ai-analytics
+        - Key: Project
+          Value: abrace-ai-analytics
+        - Key: Owner
+          Value: academic-poc
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          set -euxo pipefail
+          export DEBIAN_FRONTEND=noninteractive
+
+          # Logs do UserData ficam em /var/log/cloud-init-output.log
+          echo "[abrace-ai] iniciando bootstrap"
+
+          apt-get update
+          apt-get upgrade -y
+          apt-get install -y git curl ca-certificates gnupg
+
+          # Docker (oficial)
+          install -m 0755 -d /etc/apt/keyrings
+          curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+          chmod a+r /etc/apt/keyrings/docker.gpg
+          UBUNTU_CODENAME=$(. /etc/os-release && echo "${!VERSION_CODENAME}")
+          echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu ${!UBUNTU_CODENAME} stable" \
+            | tee /etc/apt/sources.list.d/docker.list >/dev/null
+          apt-get update
+          apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+          usermod -aG docker ubuntu
+          systemctl enable --now docker
+
+          APP_DIR=/opt/abrace-ai-analytics
+          mkdir -p "${!APP_DIR}"
+          chown ubuntu:ubuntu "${!APP_DIR}"
+
+          if [ -n "${GitRepoUrl}" ]; then
+            sudo -u ubuntu git clone --depth 1 --branch "${GitRef}" "${GitRepoUrl}" /tmp/abrace-repo || true
+            if [ -d "/tmp/abrace-repo/Documentos/Entrega02/Sistemas_Operacionais/abrace-ai-analytics" ]; then
+              cp -a "/tmp/abrace-repo/Documentos/Entrega02/Sistemas_Operacionais/abrace-ai-analytics/." "${!APP_DIR}/"
+              chown -R ubuntu:ubuntu "${!APP_DIR}"
+              cd "${!APP_DIR}"
+              [ -f .env ] || cp .env.example .env
+              sudo -u ubuntu docker compose up -d --build
+            else
+              echo "[abrace-ai] repositorio clonado mas pasta esperada nao encontrada; rodar passos manuais via SSH."
+            fi
+          else
+            echo "[abrace-ai] GitRepoUrl vazio. Faca scp do projeto e rode 'docker compose up -d --build' em ${!APP_DIR}."
+          fi
+
+          echo "[abrace-ai] bootstrap finalizado"
+
+Outputs:
+  InstanceId:
+    Value: !Ref AppInstance
+
+  PublicIp:
+    Value: !GetAtt AppInstance.PublicIp
+    Description: IP publico (efemero - muda se instancia for parada e reiniciada)
+
+  PublicDnsName:
+    Value: !GetAtt AppInstance.PublicDnsName
+
+  SshCommand:
+    Value: !Sub "ssh -i ${KeyPairName}.pem ubuntu@${AppInstance.PublicDnsName}"
+    Description: Comando SSH pronto para colar
+
+  DashboardUrl:
+    Value: !Sub "http://${AppInstance.PublicDnsName}:${AppPort}"
+    Description: URL do dashboard (acessivel apenas a partir do AllowedAppCidr)
+
+  TeardownCommand:
+    Value: !Sub "aws cloudformation delete-stack --stack-name ${AWS::StackName} --region ${AWS::Region}"
+    Description: Comando para deletar tudo (instancia + SG + EBS)

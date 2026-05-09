@@ -1,0 +1,32 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+.pytest_cache/
+.ruff_cache/
+.venv/
+venv/
+.env
+
+# Dados gerados em runtime - mantemos so os .gitkeep
+data/raw/*.csv
+data/raw/*.parquet
+data/processed/*.csv
+data/processed/*.parquet
+data/models/*.joblib
+data/models/*.pkl
+
+# Artefatos do treino
+reports/figures/*.png
+reports/figures/*.jpg
+reports/figures/*.svg
+reports/metrics/*.json
+reports/metrics/*.md
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/

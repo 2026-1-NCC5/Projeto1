@@ -1,0 +1,29 @@
+.git
+.gitignore
+.venv
+venv
+__pycache__
+*.py[cod]
+*.egg-info
+.pytest_cache
+.ruff_cache
+.env
+.DS_Store
+
+# Nao copiar dados/modelos para a imagem (volume cobre isso)
+data/raw/*
+data/processed/*
+data/models/*
+reports/figures/*
+reports/metrics/*
+
+# Manter estrutura
+!data/raw/.gitkeep
+!data/processed/.gitkeep
+!data/models/.gitkeep
+!reports/figures/.gitkeep
+!reports/metrics/.gitkeep
+
+README.md
+docker-compose.yml
+infra/

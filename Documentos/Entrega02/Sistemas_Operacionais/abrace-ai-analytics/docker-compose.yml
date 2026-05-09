@@ -1,0 +1,44 @@
+# docker-compose v2 (sem 'version' chave - obsoleto)
+# Sobe collector + dashboard. Trainer eh sob demanda via `docker compose run --rm trainer ...`.
+
+services:
+  collector:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    image: abrace-ai-analytics:latest
+    container_name: abrace_collector
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      RUN_MODE: collector
+    volumes:
+      - ./data:/app/data
+      - ./reports:/app/reports
+
+  dashboard:
+    image: abrace-ai-analytics:latest
+    container_name: abrace_dashboard
+    restart: unless-stopped
+    depends_on:
+      - collector
+    env_file: .env
+    environment:
+      RUN_MODE: dashboard
+    ports:
+      - "${DASHBOARD_PORT:-8501}:8501"
+    volumes:
+      - ./data:/app/data
+      - ./reports:/app/reports
+
+  trainer:
+    image: abrace-ai-analytics:latest
+    profiles: ["manual"]
+    env_file: .env
+    environment:
+      RUN_MODE: trainer
+    volumes:
+      - ./data:/app/data
+      - ./reports:/app/reports
+    # Uso: docker compose run --rm trainer python -m app.training.train_regression
+    entrypoint: ["/usr/local/bin/entrypoint.sh"]

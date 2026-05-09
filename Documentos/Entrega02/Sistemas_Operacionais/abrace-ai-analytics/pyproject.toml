@@ -1,0 +1,50 @@
+[project]
+name = "abrace-ai-analytics"
+version = "0.1.0"
+description = "Monitoramento inteligente de recursos em nuvem com IA - projeto academico FECAP."
+readme = "README.md"
+requires-python = ">=3.12"
+authors = [{ name = "AbraceAI Analytics" }]
+license = { text = "Academic" }
+
+dependencies = [
+    "pandas>=2.2,<3",
+    "numpy>=2.0,<3",
+    "scikit-learn>=1.5,<2",
+    "psutil>=6.0,<7",
+    "joblib>=1.4,<2",
+    "streamlit>=1.39,<2",
+    "streamlit-autorefresh>=1.0,<2",
+    "pydantic>=2.9,<3",
+    "pydantic-settings>=2.5,<3",
+    "pyarrow>=17,<19",
+    "matplotlib>=3.9,<4",
+    "seaborn>=0.13,<1",
+    "python-dotenv>=1.0,<2",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.3,<9",
+    "ruff>=0.7,<1",
+]
+
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["app*"]
+exclude = ["tests*"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP"]
+ignore = ["E501"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"

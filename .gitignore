@@ -247,3 +247,4 @@ __pycache__/
 *.tsbuildinfo
 apps/python-backend/artifacts/
 treinamento-ml/
+.cursor/
