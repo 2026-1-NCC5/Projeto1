@@ -1,10 +1,13 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useAppState } from '../context/appStateContextValue';
 import useAuditoriaWS from '../hooks/useAuditoriaWS';
 import useCameraStream from '../hooks/useCameraStream';
 import {
   criarDeteccaoManual,
+  corrigirDeteccao,
+  excluirDeteccao,
   finalizarSessao,
+  listarAlimentos,
   obterOuCriarSessaoAtiva,
   obterConciliacaoPreviaSessao,
   decidirFonteFinalSessao,
@@ -14,6 +17,14 @@ import DetectionPopup from '../components/DetectionPopup';
 import ScannerLogPanel from '../components/ScannerLogPanel';
 import SessionItemsPanel from '../components/SessionItemsPanel';
 import FinalizacaoConciliacaoModal from '../components/FinalizacaoConciliacaoModal';
+import RevisaoDeteccaoModal from '../components/RevisaoDeteccaoModal';
+import {
+  buildAggregatedItemsFromRelatorio,
+  buildAggregatedItemsFromCapturasSession,
+  totalKgFromItems,
+} from '../utils/kanbanItems';
+import soundSuccessUrl from '../assets/sound-success.wav';
+import soundWarningUrl from '../assets/sound-warning-error.wav';
 
 // Tela do scanner: liga câmera, abre WS de auditoria, exibe overlay de
 // bbox/preview YOLO, popup de detecção fixo na base e painel de logs.
@@ -37,8 +48,20 @@ export default function CameraScreen() {
     setCurrentSessionItems([]);
   }, [activeGroupId]);
 
+  // Mantém a mesma sessão em que o manual gravou as deteccoes MANUAL.
+  // Se chamarmos obterOuCriarSessaoAtiva depois do manual, a API pode devolver
+  // outra sessão (ex.: POST criou sessão nova) e o relatório de conciliação
+  // deixa de ver os itens declarados — só as capturas da sessão atual.
   useEffect(() => {
     if (!activeGroupId || grupoBackendId == null) return;
+    const sessaoDoManual =
+      activeGroup?.etapaTriagem === 'manual_ok' && activeGroup?.triagemSessaoId != null
+        ? Number(activeGroup.triagemSessaoId)
+        : NaN;
+    if (Number.isFinite(sessaoDoManual) && sessaoDoManual > 0) {
+      setAuditSessaoId(String(sessaoDoManual));
+      return;
+    }
     let cancelled = false;
     (async () => {
       const r = await obterOuCriarSessaoAtiva(grupoBackendId);
@@ -53,7 +76,14 @@ export default function CameraScreen() {
       }
     })();
     return () => { cancelled = true; };
-  }, [activeGroupId, grupoBackendId, addToast, setAuditSessaoId]);
+  }, [
+    activeGroupId,
+    grupoBackendId,
+    activeGroup?.etapaTriagem,
+    activeGroup?.triagemSessaoId,
+    addToast,
+    setAuditSessaoId,
+  ]);
 
   const videoRef = useRef(null);
 
@@ -74,6 +104,46 @@ export default function CameraScreen() {
   const [modalSalvando, setModalSalvando] = useState(false);
   const [modalErro, setModalErro] = useState('');
   const [relatorioConciliacao, setRelatorioConciliacao] = useState(null);
+  const [revisaoModalDeteccaoId, setRevisaoModalDeteccaoId] = useState(null);
+  const [salvandoRevisao, setSalvandoRevisao] = useState(false);
+  const [alimentosCatalogo, setAlimentosCatalogo] = useState([]);
+
+  const soundSuccessRef = useRef(null);
+  const soundWarningRef = useRef(null);
+
+  useEffect(() => {
+    soundSuccessRef.current = new Audio(soundSuccessUrl);
+    soundWarningRef.current = new Audio(soundWarningUrl);
+    return () => {
+      soundSuccessRef.current = null;
+      soundWarningRef.current = null;
+    };
+  }, []);
+
+  const playSuccessSound = useCallback(() => {
+    const a = soundSuccessRef.current;
+    if (!a) return;
+    a.currentTime = 0;
+    void a.play().catch(() => {});
+  }, []);
+
+  const playWarningSound = useCallback(() => {
+    const a = soundWarningRef.current;
+    if (!a) return;
+    a.currentTime = 0;
+    void a.play().catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const r = await listarAlimentos();
+      if (cancelled) return;
+      if (!r.ok || !Array.isArray(r.data)) return;
+      setAlimentosCatalogo(r.data.filter((a) => a.ativo !== false));
+    })();
+    return () => { cancelled = true; };
+  }, []);
 
   // ===== AUDITORIA WS (câmera ↔ FastAPI) =====
   // O hook só conecta quando a tela é 'camera' e há um sessao_id válido.
@@ -120,6 +190,8 @@ export default function CameraScreen() {
     const nome = rf.alimento_nome || yolo.classe || 'Desconhecido';
     const deteccaoId = ultimaPreliminar.deteccao_id;
 
+    playSuccessSound();
+
     setCurrentSessionItems(prev => [
       ...prev,
       {
@@ -131,6 +203,7 @@ export default function CameraScreen() {
         alimento_id: rf.alimento_id,
         alimento_id_original: rf.alimento_id,
         imagem_path: ultimaPreliminar.imagem_path,
+        revisaoManualPendente: false,
       },
     ]);
 
@@ -144,7 +217,7 @@ export default function CameraScreen() {
   // Reagimos exclusivamente à chegada de uma preliminar nova; demais setters
   // são estáveis e o efeito deve rodar exatamente uma vez por detecção.
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [ultimaPreliminar]);
+  }, [ultimaPreliminar, playSuccessSound]);
 
   // 2) Quando o Gemini conclui (ou o backend sinaliza que está OFF),
   //    procuramos o item correspondente pelo `deteccaoId` e atualizamos o
@@ -152,39 +225,86 @@ export default function CameraScreen() {
   //    renomeamos o item e marcamos como "corrigido".
   useEffect(() => {
     if (!ultimaAtualizacaoGemini) return;
-    const { deteccao_id, gemini, alimento_nome, alimento_id, fonte } = ultimaAtualizacaoGemini;
-    setCurrentSessionItems(prev => {
-      const idx = prev.findIndex(it => it.deteccaoId === deteccao_id);
+    const {
+      deteccao_id,
+      gemini,
+      alimento_nome,
+      alimento_id,
+      fonte,
+      peso_kg: pesoKgWs,
+      revisao_manual_pendente: revPend,
+    } = ultimaAtualizacaoGemini;
+
+    let deveAvisar = false;
+    if (revPend === true) {
+      deveAvisar = true;
+    } else if (gemini) {
+      let concordaClasse = gemini.concorda_classe;
+      let concordaPeso = gemini.concorda_peso;
+      if (concordaClasse === undefined && gemini) {
+        concordaClasse = gemini.concorda;
+      }
+      if (concordaPeso === undefined) {
+        concordaPeso = true;
+      }
+      if (concordaClasse === false || concordaPeso === false) {
+        deveAvisar = true;
+      }
+    }
+    if (deveAvisar) playWarningSound();
+
+    setCurrentSessionItems((prev) => {
+      const idx = prev.findIndex((it) => it.deteccaoId === deteccao_id);
       if (idx < 0) return prev;
       const atual = prev[idx];
       let novoStatus = atual.status;
       let novoNome = atual.name;
       let novoAlimentoId = atual.alimento_id;
-      if (!gemini) {
+      let novoPeso = atual.weight;
+      if (pesoKgWs != null && Number.isFinite(Number(pesoKgWs))) {
+        novoPeso = Number(pesoKgWs);
+      }
+      if (revPend === true) {
+        novoStatus = 'revisao_pendente';
+      } else if (!gemini) {
         novoStatus = 'sem_gemini';
-      } else if (gemini.concorda) {
-        novoStatus = 'validado';
-      } else if (alimento_nome) {
-        novoStatus = 'corrigido';
-        novoNome = alimento_nome;
-        novoAlimentoId = alimento_id ?? atual.alimento_id;
       } else {
-        // Gemini discordou mas não propôs classe nova — mantém YOLO
-        novoStatus = 'sem_gemini';
+        let concordaClasse = gemini?.concorda_classe;
+        let concordaPeso = gemini?.concorda_peso;
+        if (concordaClasse === undefined && gemini) {
+          concordaClasse = gemini.concorda;
+        }
+        if (concordaPeso === undefined) {
+          concordaPeso = true;
+        }
+        const pesoMudou = Math.abs(Number(novoPeso) - Number(atual.weight)) > 1e-3;
+        if (concordaClasse && concordaPeso) {
+          novoStatus = 'validado';
+        } else if (alimento_nome) {
+          novoStatus = 'corrigido';
+          novoNome = alimento_nome;
+          novoAlimentoId = alimento_id ?? atual.alimento_id;
+        } else if (pesoMudou) {
+          novoStatus = 'corrigido';
+        } else {
+          novoStatus = 'sem_gemini';
+        }
       }
       const atualizado = {
         ...atual,
         status: novoStatus,
         name: novoNome,
+        weight: novoPeso,
         alimento_id: novoAlimentoId,
         gemini,
         fonte: fonte || atual.fonte,
+        revisaoManualPendente: revPend === true,
       };
       const cpy = prev.slice();
       cpy[idx] = atualizado;
       return cpy;
     });
-  }, [ultimaAtualizacaoGemini]);
+  }, [ultimaAtualizacaoGemini, playWarningSound]);
 
   // Remove o flash do popup depois da animação (~700ms).
   useEffect(() => {
@@ -197,6 +317,57 @@ export default function CameraScreen() {
     () => currentSessionItems.reduce((acc, it) => acc + (it.weight || 0), 0),
     [currentSessionItems]
   );
+
+  const itemEmRevisao = useMemo(
+    () => currentSessionItems.find((it) => it.deteccaoId === revisaoModalDeteccaoId) || null,
+    [currentSessionItems, revisaoModalDeteccaoId]
+  );
+
+  const handleRevisarItem = (index) => {
+    const it = currentSessionItems[index];
+    if (!it?.deteccaoId) return;
+    setRevisaoModalDeteccaoId(it.deteccaoId);
+  };
+
+  const handleSalvarRevisao = async ({ alimentoId, pesoKg }) => {
+    const targetId = revisaoModalDeteccaoId;
+    if (targetId == null) return;
+    setSalvandoRevisao(true);
+    try {
+      const r = await corrigirDeteccao(targetId, { alimentoId, pesoKg });
+      if (!r.ok) {
+        const det = r.data?.detail;
+        let msg = `Falha ao salvar (${r.status})`;
+        if (typeof det === 'string') msg = det;
+        else if (Array.isArray(det)) msg = det.map((x) => x?.msg || '').filter(Boolean).join(' ') || msg;
+        addToast(msg, 'error');
+        return;
+      }
+      setCurrentSessionItems((prev) => {
+        const idx = prev.findIndex((x) => x.deteccaoId === targetId);
+        if (idx < 0) return prev;
+        const cur = prev[idx];
+        const al = alimentosCatalogo.find((x) => x.id === alimentoId);
+        const nomeNovo = al?.nome || cur.name;
+        const mudouCat = alimentoId !== cur.alimento_id;
+        const cpy = prev.slice();
+        cpy[idx] = {
+          ...cur,
+          name: nomeNovo,
+          weight: pesoKg,
+          alimento_id: alimentoId,
+          status: mudouCat ? 'corrigido' : 'validado',
+          revisaoManualPendente: false,
+          nomeOriginal: mudouCat ? cur.name : cur.nomeOriginal,
+        };
+        return cpy;
+      });
+      addToast('Correção registrada.', 'success');
+      setRevisaoModalDeteccaoId(null);
+    } finally {
+      setSalvandoRevisao(false);
+    }
+  };
 
   // Câmera local (getUserMedia). O envio de frames é feito pelo useAuditoriaWS.
   useCameraStream({
@@ -266,47 +437,33 @@ export default function CameraScreen() {
   const aplicarNoKanban = (fonteFinal, relatorio) => {
     if (!activeGroupId) return;
     if (fonteFinal === 'manual' && relatorio) {
-      const itensManuais = [];
-      relatorio.linhas.forEach((linha) => {
-        if (!linha.qtd_declarada || linha.qtd_declarada <= 0) return;
-        const qtd = linha.qtd_declarada;
-        const pesoTotal = Number(linha.peso_declarado_kg || 0);
-        const pesoUnitario = qtd > 0 ? Number((pesoTotal / qtd).toFixed(2)) : pesoTotal;
-        for (let i = 0; i < qtd; i += 1) {
-          itensManuais.push({ name: linha.alimento_nome, weight: pesoUnitario });
-        }
-      });
-      if (itensManuais.length === 0) return;
-      setAppState(prev => prev.map(group => {
-        if (group.id === activeGroupId) {
-          const newItems = [...group.items, ...itensManuais];
-          const addedKg = itensManuais.reduce((acc, obj) => acc + obj.weight, 0);
-          return {
-            ...group,
-            items: newItems,
-            totalKg: parseFloat((group.totalKg + addedKg).toFixed(2))
-          };
-        }
-        return group;
+      const itemsFinal = buildAggregatedItemsFromRelatorio(relatorio);
+      const tk = totalKgFromItems(itemsFinal);
+      setAppState((prev) => prev.map((group) => {
+        if (group.id !== activeGroupId) return group;
+        return {
+          ...group,
+          items: itemsFinal,
+          totalKg: parseFloat(tk.toFixed(2)),
+          etapaTriagem: 'inicio',
+          triagemSessaoId: null,
+        };
       }));
       return;
     }
 
-    if (currentSessionItems.length > 0) {
-      setAppState(prev => prev.map(group => {
-        if (group.id === activeGroupId) {
-          // Sanitiza itens para o shape do appState ({ name, weight }) — campos
-          // de tracking (deteccaoId, status, gemini) só importam na tela do scanner.
-          const novosSimples = currentSessionItems.map(it => ({ name: it.name, weight: it.weight }));
-          const newItems = [...group.items, ...novosSimples];
-          const addedKg = currentSessionItems.reduce((acc, obj) => acc + obj.weight, 0);
-          return {
-            ...group,
-            items: newItems,
-            totalKg: parseFloat((group.totalKg + addedKg).toFixed(2))
-          };
-        }
-        return group;
+    if (fonteFinal === 'capturas') {
+      const itemsFinal = buildAggregatedItemsFromCapturasSession(currentSessionItems);
+      const tk = totalKgFromItems(itemsFinal);
+      setAppState((prev) => prev.map((group) => {
+        if (group.id !== activeGroupId) return group;
+        return {
+          ...group,
+          items: itemsFinal,
+          totalKg: parseFloat(tk.toFixed(2)),
+          etapaTriagem: 'inicio',
+          triagemSessaoId: null,
+        };
       }));
     }
   };
@@ -333,6 +490,7 @@ export default function CameraScreen() {
         return;
       }
       addToast('Sessão finalizada e consolidada.', 'success');
+      setAuditSessaoId('');
       pararCapturaWS();
       setModalConciliacaoAberto(false);
       setCurrentScreen('dashboard');
@@ -383,8 +541,17 @@ export default function CameraScreen() {
     setCurrentScreen('dashboard');
   };
 
-  const handleRemoverItem = (index) => {
-    setCurrentSessionItems(prev => prev.filter((_, i) => i !== index));
+  const handleRemoverItem = async (index) => {
+    const it = currentSessionItems[index];
+    if (!it) return;
+    if (it.deteccaoId != null) {
+      const r = await excluirDeteccao(it.deteccaoId);
+      if (!r.ok && r.status !== 404) {
+        addToast('Não foi possível remover o registro no servidor.', 'error');
+        return;
+      }
+    }
+    setCurrentSessionItems((prev) => prev.filter((_, i) => i !== index));
   };
 
   return (
@@ -475,12 +642,14 @@ export default function CameraScreen() {
         onToggleMinimizado={() => setPopupMinimizado((v) => !v)}
         onRemoverItem={handleRemoverItem}
         onFinalizar={handleFinishCount}
+        onRevisarItem={handleRevisarItem}
       />
 
       <SessionItemsPanel
         items={currentSessionItems}
         pesoTotal={pesoTotalSessao}
         onRemoverItem={handleRemoverItem}
+        onRevisarItem={handleRevisarItem}
       />
 
       {mostrarLogsAuditoria ? (
@@ -511,6 +680,17 @@ export default function CameraScreen() {
         onConfirmarManual={handleConfirmarManual}
         onConfirmarCapturas={handleConfirmarCapturas}
       />
+
+      {revisaoModalDeteccaoId != null && itemEmRevisao ? (
+        <RevisaoDeteccaoModal
+          key={revisaoModalDeteccaoId}
+          item={itemEmRevisao}
+          alimentos={alimentosCatalogo}
+          salvando={salvandoRevisao}
+          onFechar={() => !salvandoRevisao && setRevisaoModalDeteccaoId(null)}
+          onSalvar={handleSalvarRevisao}
+        />
+      ) : null}
     </div>
   );
 }

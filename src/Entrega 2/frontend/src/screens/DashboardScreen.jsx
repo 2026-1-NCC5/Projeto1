@@ -10,11 +10,22 @@ import {
   atualizarGrupo,
   excluirGrupo,
 } from '../services/api';
+import { aggregateKanbanItems, totalKgFromItems } from '../utils/kanbanItems';
 
 // Tela principal: Kanban de grupos + header com perfil e atalho para
 // visualização gráfica. Disparam câmera/manual e edição de grupos.
 export default function DashboardScreen() {
-  const { appState, setAppState, userData, setCurrentScreen, setActiveGroupId, addToast, logout } = useAppState();
+  const {
+    appState,
+    setAppState,
+    userData,
+    setCurrentScreen,
+    setActiveGroupId,
+    setAuditSessaoId,
+    setManualSomenteAcrescentar,
+    addToast,
+    logout,
+  } = useAppState();
 
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [isUserPopupOpen, setIsUserPopupOpen] = useState(false);
@@ -46,6 +57,8 @@ export default function DashboardScreen() {
             totalKg: local?.totalKg ?? 0,
             items: Array.isArray(local?.items) ? local.items : [],
             grupoIdBackend: apiG.id,
+            etapaTriagem: local?.etapaTriagem ?? 'inicio',
+            triagemSessaoId: local?.triagemSessaoId ?? null,
           };
         });
         if (!syncDoneRef.current && prev.some((p) => !p.grupoIdBackend)) {
@@ -96,6 +109,8 @@ export default function DashboardScreen() {
         totalKg: 0,
         items: [],
         grupoIdBackend: g.id,
+        etapaTriagem: 'inicio',
+        triagemSessaoId: null,
       }]);
       addToast('Grupo criado no servidor.', 'success');
     } else {
@@ -138,14 +153,53 @@ export default function DashboardScreen() {
     addToast('Grupo removido.', 'success');
   };
 
-  const handleStartCount = (groupId) => {
-    setActiveGroupId(groupId);
-    setCurrentScreen('camera');
-  };
-
-  const handleStartManual = (groupId) => {
+  const handleIniciarTriagem = (groupId) => {
+    const alvo = appState.find((x) => String(x.id) === String(groupId));
+    if (!alvo) return;
+    setManualSomenteAcrescentar(false);
+    if (alvo.etapaTriagem === 'manual_ok' && alvo.triagemSessaoId != null) {
+      setAuditSessaoId(String(alvo.triagemSessaoId));
+      setActiveGroupId(groupId);
+      setCurrentScreen('camera');
+      return;
+    }
     setActiveGroupId(groupId);
     setCurrentScreen('manual');
+  };
+
+  const handleAcrescentarItens = (groupId) => {
+    setManualSomenteAcrescentar(true);
+    setActiveGroupId(groupId);
+    setCurrentScreen('manual');
+  };
+
+  const handleAtualizarItemKanban = (groupId, idx, { quantity, weight }) => {
+    const q = Math.max(1, parseInt(quantity, 10) || 1);
+    const p = parseFloat(String(weight).replace(',', '.'));
+    if (!p || p <= 0) return;
+    setAppState((prev) => prev.map((g) => {
+      if (String(g.id) !== String(groupId)) return g;
+      const items = [...(g.items || [])];
+      if (!items[idx]) return g;
+      items[idx] = { ...items[idx], quantity: q, weight: p };
+      const agg = aggregateKanbanItems(items);
+      const tk = totalKgFromItems(agg);
+      return { ...g, items: agg, totalKg: parseFloat(tk.toFixed(2)) };
+    }));
+  };
+
+  const handleRemoverUnidadeKanban = (groupId, idx) => {
+    setAppState((prev) => prev.map((g) => {
+      if (String(g.id) !== String(groupId)) return g;
+      const items = [...(g.items || [])];
+      const it = items[idx];
+      if (!it) return g;
+      const q = Math.max(0, (it.quantity || 1) - 1);
+      if (q <= 0) items.splice(idx, 1);
+      else items[idx] = { ...it, quantity: q };
+      const tk = totalKgFromItems(items);
+      return { ...g, items, totalKg: parseFloat(tk.toFixed(2)) };
+    }));
   };
 
   const handleGoConfig = () => {
@@ -199,8 +253,10 @@ export default function DashboardScreen() {
               key={group.id}
               group={group}
               onEdit={handleEditGroup}
-              onIniciarCamera={handleStartCount}
-              onIniciarManual={handleStartManual}
+              onIniciarTriagem={handleIniciarTriagem}
+              onAcrescentarItens={handleAcrescentarItens}
+              onAtualizarItemKanban={handleAtualizarItemKanban}
+              onRemoverUnidadeKanban={handleRemoverUnidadeKanban}
             />
           ))}
 

@@ -93,7 +93,7 @@ projeto-1-abrace-ai/
             └── src/
                 ├── main.jsx
                 ├── App.jsx                 ← roteador de telas (~37 linhas, switch sobre currentScreen)
-                ├── constants.js            ← API_BASE, WS_BASE, REALTIME_BASE
+                ├── constants.js            ← API_BASE, WS_BASE
                 ├── index.css               ← design system (custom CSS, vars, animações)
                 ├── context/
                 │   ├── AppStateContext.jsx     ← AppStateProvider (componente)
@@ -102,7 +102,6 @@ projeto-1-abrace-ai/
                 │   ├── useAuditoriaWS.js       ← WebSocket nativo da câmera (frames/preview/detecção preliminar + atualização Gemini)
                 │   ├── useToasts.js            ← addToast + array de toasts
                 │   ├── usePersistedAppState.js ← grupos + sessao_id em localStorage
-                │   ├── useRealtimeSocket.js    ← Socket.IO :5000 (dashboard realtime)
                 │   ├── useCameraStream.js      ← getUserMedia + cleanup do <video>
                 ├── services/
                 │   └── api.js                  ← criarDeteccao()/criarDeteccaoManual(), finalizarSessao(); fluxo WS não usa POST para auto‑captura
@@ -364,7 +363,7 @@ dedicado.
 | Endpoints REST          | plural em PT-BR       | `/api/v1/sessoes`, `/api/v1/deteccoes` |
 | Eventos WS              | `snake_case` em PT-BR | `frame`, `preview`, `deteccao_preliminar`, `deteccao_atualizada`, `reset` |
 | Componentes React       | `PascalCase` JSX      | `DeteccaoModal`, `SessionBadge`   |
-| Variáveis JS            | `camelCase`           | `currentSessionItems`, `realtimeStatus` |
+| Variáveis JS            | `camelCase`           | `currentSessionItems`, `auditSessaoId` |
 
 ---
 
@@ -397,7 +396,7 @@ Antes de declarar uma tarefa concluída, verifique:
    inicial; não comitar mudanças incidentais (use `git checkout -- bd/abraceai.db`
    se modificou sem querer durante testes).
 5. **Scanner usa WebSocket nativo em `localhost:8000`** — não reintroduzir Socket.IO
-   na câmera. O dashboard/realtime antigo ainda pode ter código legado separado.
+   na câmera. A Visualização Gráfica usa apenas REST (`/relatorios`) com polling no cliente.
 6. **`api/main.py` faz `sys.path.append(BASE_DIR)`** para importar `bd.*` — não
    remover sem reorganizar os imports e o `Dockerfile`.
 7. **Não reintroduzir mock de detecção no scanner.** O peso padrão deve vir de

@@ -1,6 +1,6 @@
 from typing import Optional
 from datetime import datetime
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
 class DeteccaoBase(BaseModel):
     alimento_id: Optional[int] = None
@@ -18,7 +18,8 @@ class DeteccaoCreate(DeteccaoBase):
     gemini_justificativa: Optional[str] = None
 
 class DeteccaoCorrecao(BaseModel):
-    alimento_id: int
+    alimento_id: Optional[int] = None
+    peso_kg: Optional[float] = None
 
 class DeteccaoResponse(DeteccaoBase):
     id: int
@@ -29,6 +30,7 @@ class DeteccaoResponse(DeteccaoBase):
     gemini_concorda: Optional[bool] = None
     gemini_classe: Optional[str] = None
     gemini_justificativa: Optional[str] = None
+    revisao_manual_pendente: bool = False
     criado_em: datetime
 
     class Config:

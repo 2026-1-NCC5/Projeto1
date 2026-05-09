@@ -7,10 +7,10 @@ import RecentActivity from '../components/realtime/RecentActivity';
 import GroupBreakdown from '../components/realtime/GroupBreakdown';
 import { relatorioGrupos, relatorioCategorias } from '../services/api';
 
-// Visualização Gráfica: prioriza agregados do FastAPI (relatórios); se vazio,
-// usa appState local. Socket.IO :5000 segue opcional via realtimeStatus.
+// Visualização Gráfica: prioriza agregados do FastAPI (GET /relatorios); se vazio,
+// usa appState local (Kanban). Atualização periódica a cada 20 s.
 export default function RealtimeScreen() {
-  const { appState, realtimeStatus, setCurrentScreen } = useAppState();
+  const { appState, setCurrentScreen } = useAppState();
   const [relGrupos, setRelGrupos] = useState(null);
   const [relCategorias, setRelCategorias] = useState(null);
 
@@ -130,9 +130,6 @@ export default function RealtimeScreen() {
     };
   }, [appState, relGrupos, relCategorias]);
 
-  const statusLabel = realtimeStatus === 'online' ? 'Socket.IO' : realtimeStatus === 'connecting' ? 'Conectando…' : 'API + local';
-  const statusClass = realtimeStatus === 'online' ? 'online' : realtimeStatus === 'connecting' ? 'connecting' : 'offline';
-
   return (
     <div className="flex flex-col h-full bg-dark">
       <header className="flex justify-between align-center p-5 border-b border-gray-medium bg-header shadow-md relative z-10">
@@ -147,10 +144,6 @@ export default function RealtimeScreen() {
           {usarRelatorios && (
             <span className="text-xs font-bold text-primary border border-primary/30 px-2 py-1 rounded-full">Dados do servidor</span>
           )}
-          <div className={`flex align-center gap-2 px-4 py-2 rounded-full border border-gray-medium`} style={{ background: 'rgba(0,0,0,0.3)' }}>
-            <div className={`status-indicator status-${statusClass}`}></div>
-            <span className="text-xs font-bold text-white tracking-wide">{statusLabel}</span>
-          </div>
         </div>
       </header>
 
@@ -177,16 +170,6 @@ export default function RealtimeScreen() {
         </div>
 
         <GroupBreakdown appState={chartAppState} totalKg={computed.totalKg} />
-
-        {realtimeStatus === 'offline' && (
-          <div className="flex align-center gap-3 p-4 rounded-xl fade-in" style={{ background: 'rgba(245, 166, 35, 0.08)', border: '1px solid rgba(245, 166, 35, 0.2)' }}>
-            <i className="ph ph-cloud-slash text-xl" style={{ color: '#f5a623' }}></i>
-            <div>
-              <div className="text-sm font-bold text-white">Servidor Socket.IO (:5000) indisponível</div>
-              <div className="text-xs text-gray">Os gráficos usam GET /relatorios quando há detecções no banco; atividade recente reflete o Kanban local.</div>
-            </div>
-          </div>
-        )}
       </div>
     </div>
   );

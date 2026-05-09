@@ -13,8 +13,11 @@ export default function FinalizacaoConciliacaoModal({
   if (!aberto) return null;
 
   const divergencias = relatorio?.divergencias ?? 0;
-  const sucesso = !carregando && !erro && divergencias === 0;
-  const atencao = !carregando && !erro && divergencias > 0;
+  const revisaoCount = relatorio?.revisao_manual_pendente_count ?? 0;
+  const revisaoItens = relatorio?.revisao_manual_itens ?? [];
+  const bloqueadoRevisao = revisaoCount > 0;
+  const sucesso = !carregando && !erro && divergencias === 0 && !bloqueadoRevisao;
+  const atencao = !carregando && !erro && divergencias > 0 && !bloqueadoRevisao;
 
   return (
     <div className="modal-overlay active">
@@ -54,6 +57,34 @@ export default function FinalizacaoConciliacaoModal({
               <p>{divergencias} divergência(s) encontrada(s).</p>
             </div>
           ) : null}
+          {bloqueadoRevisao ? (
+            <div className="finalizacao-status-alerta">
+              <i className="ph-fill ph-warning-octagon" />
+              <div>
+                <p>
+                  {revisaoCount === 1
+                    ? 'Há 1 item que exige revisão manual de peso ou categoria antes de finalizar.'
+                    : `Há ${revisaoCount} itens que exigem revisão manual de peso ou categoria antes de finalizar.`}
+                </p>
+                <p className="text-gray text-xs mt-1">
+                  Use o ícone de lápis na lista de itens da sessão, confira a evidência e salve a correção.
+                </p>
+                {revisaoItens.length > 0 ? (
+                  <ul className="text-xs text-gray mt-2">
+                    {revisaoItens.slice(0, 8).map((ri) => (
+                      <li key={ri.deteccao_id}>
+                        #{ri.deteccao_id}
+                        {ri.alimento_nome ? ` — ${ri.alimento_nome}` : ''}
+                      </li>
+                    ))}
+                    {revisaoItens.length > 8 ? (
+                      <li>… e mais {revisaoItens.length - 8}</li>
+                    ) : null}
+                  </ul>
+                ) : null}
+              </div>
+            </div>
+          ) : null}
         </div>
 
         {relatorio && !carregando ? (
@@ -76,7 +107,7 @@ export default function FinalizacaoConciliacaoModal({
             type="button"
             className="btn btn-outline"
             onClick={onConfirmarManual}
-            disabled={carregando || !!erro || salvando}
+            disabled={carregando || !!erro || salvando || bloqueadoRevisao}
           >
             <i className="ph ph-hand-palm" />
             Confirmar manualmente
@@ -85,7 +116,7 @@ export default function FinalizacaoConciliacaoModal({
             type="button"
             className="btn btn-primary"
             onClick={onConfirmarCapturas}
-            disabled={carregando || !!erro || salvando}
+            disabled={carregando || !!erro || salvando || bloqueadoRevisao}
           >
             <i className="ph ph-camera" />
             Confirmar capturas

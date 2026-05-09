@@ -9,7 +9,7 @@ import { useEffect, useRef, useState, useCallback } from 'react';
  *  - { tipo: 'preview',              yolo }
  *  - { tipo: 'status',               estado, lock_ate_ts }
  *  - { tipo: 'deteccao_preliminar',  deteccao_id, yolo, resultado_final, imagem_path, ts }
- *  - { tipo: 'deteccao_atualizada',  deteccao_id, gemini, alimento_id, alimento_nome, fonte, ts }
+ *  - { tipo: 'deteccao_atualizada',  deteccao_id, gemini, alimento_id, alimento_nome, fonte, peso_kg, revisao_manual_pendente, ts }
  *  - { tipo: 'log' | 'erro',         ... }
  *
  * @param {{ sessaoId: number|string|null, videoRef: React.RefObject<HTMLVideoElement>,

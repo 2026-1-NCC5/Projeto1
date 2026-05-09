@@ -248,3 +248,4 @@ __pycache__/
 apps/python-backend/artifacts/
 treinamento-ml/
 .cursor/
+.agents/

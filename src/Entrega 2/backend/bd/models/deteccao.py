@@ -29,6 +29,8 @@ class Deteccao(Base):
     gemini_concorda: Mapped[Optional[bool]] = mapped_column(Boolean, nullable=True)
     gemini_classe: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
     gemini_justificativa: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
+    # Gemini respondeu mas peso ilegível ou alerta explícito — exige correção antes de finalizar sessão
+    revisao_manual_pendente: Mapped[bool] = mapped_column(Boolean, default=False)
     criado_em: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
     sessao: Mapped["Sessao"] = relationship("Sessao", back_populates="deteccoes")
