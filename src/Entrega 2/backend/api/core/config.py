@@ -35,6 +35,15 @@ class Settings(BaseSettings):
     # ===== Evidências =====
     EVIDENCIA_DIR: str = EVIDENCIA_DEFAULT_DIR
 
+    # ===== Autenticação admin (PoC, sem senha) =====
+    AUTH_SESSION_IDLE_MINUTES: int = 240
+    AUTH_COOKIE_NAME: str = "abraceai_session"
+    AUTH_COOKIE_SECURE: bool = False
+    # Origens permitidas com credenciais (Vite dev + produção). Separadas por vírgula.
+    CORS_ORIGINS: str = "http://localhost:5173,http://127.0.0.1:5173"
+    # Domínios após @ permitidos em cadastro/login (ex.: fecap.edu.br,abraceai.com.br)
+    AUTH_EMAIL_DOMAINS: str = "fecap.edu.br,abraceai.com.br"
+
     class Config:
         env_file = ".env"
         extra = "ignore"

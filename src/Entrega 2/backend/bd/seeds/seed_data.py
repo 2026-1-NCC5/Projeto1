@@ -79,11 +79,11 @@ def seed_grupos_alimentos(db):
 
 
 def seed_usuarios_e_equipes(db):
-    existente_user = db.query(Usuario).filter_by(email="nutricionista").first()
+    existente_user = db.query(Usuario).filter_by(email="nutricionista@fecap.edu.br").first()
     if not existente_user:
         usuario = Usuario(
             nome="Nutricionista Teste",
-            email="nutricionista",
+            email="nutricionista@fecap.edu.br",
             perfil="operador"
         )
         db.add(usuario)

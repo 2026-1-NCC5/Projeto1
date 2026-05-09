@@ -33,4 +33,7 @@ class RelatorioSessao(BaseModel):
     status: str
     total_kg_detectado: float = 0
     total_itens_detectados: int = 0
+    total_kg_declarado: float = 0
+    total_itens_declarados: int = 0
+    divergencias: int = 0
     linhas: List[LinhaAuditoriaSessao] = []

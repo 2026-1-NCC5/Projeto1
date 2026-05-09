@@ -1,8 +1,7 @@
 import React from 'react';
 
-// Dropdown do header da Dashboard. Mostra dados do usuário e atalhos
-// para Configuração e Deletar Conta.
-export default function UserPopup({ aberto, userData, onIrConfig, onFechar }) {
+// Dropdown do header da Dashboard. Mostra dados do usuário, Configuração e Sair.
+export default function UserPopup({ aberto, userData, onIrConfig, onFechar, onSair }) {
   return (
     <div
       className={`absolute mt-3 bg-card border border-gray-medium rounded-2xl shadow-2xl overflow-hidden transition ${aberto ? 'pop-up-show' : 'pop-up-hide'}`}
@@ -25,9 +24,16 @@ export default function UserPopup({ aberto, userData, onIrConfig, onFechar }) {
           <span className="font-medium">Configuração de Dados</span>
         </button>
         <div className="my-1 border-t border-gray-medium"></div>
-        <button className="flex align-center gap-3 w-full p-3 text-sm text-red-500 rounded-xl transition text-left popup-btn-gray" onClick={() => { onFechar(); console.log('Conta marcada para deleção!'); }}>
-          <i className="ph ph-trash text-xl"></i>
-          <span className="font-bold tracking-wide">Deletar Conta</span>
+        <button
+          type="button"
+          className="flex align-center gap-3 w-full p-3 text-sm text-gray rounded-xl transition text-left popup-btn-gray hover-text-white"
+          onClick={() => {
+            onFechar();
+            if (typeof onSair === 'function') onSair();
+          }}
+        >
+          <i className="ph ph-sign-out text-xl text-primary"></i>
+          <span className="font-bold tracking-wide">Sair</span>
         </button>
       </div>
     </div>

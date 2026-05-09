@@ -99,20 +99,19 @@ projeto-1-abrace-ai/
                 │   ├── AppStateContext.jsx     ← AppStateProvider (componente)
                 │   └── appStateContextValue.js ← createContext + useAppState() hook
                 ├── hooks/
-                │   ├── useAuditoriaWS.js       ← WebSocket nativo da câmera (frames/preview/deteccao)
+                │   ├── useAuditoriaWS.js       ← WebSocket nativo da câmera (frames/preview/detecção preliminar + atualização Gemini)
                 │   ├── useToasts.js            ← addToast + array de toasts
                 │   ├── usePersistedAppState.js ← grupos + sessao_id em localStorage
                 │   ├── useRealtimeSocket.js    ← Socket.IO :5000 (dashboard realtime)
                 │   ├── useCameraStream.js      ← getUserMedia + cleanup do <video>
-                │   └── useDraggablePopup.js    ← drag do popup da CameraScreen
                 ├── services/
-                │   └── api.js                  ← criarDeteccao(), finalizarSessao()
+                │   └── api.js                  ← criarDeteccao()/criarDeteccaoManual(), finalizarSessao(); fluxo WS não usa POST para auto‑captura
                 ├── screens/                    ← uma tela por arquivo, consomem useAppState()
                 │   ├── HomeScreen.jsx
                 │   ├── CadastroScreen.jsx
                 │   ├── ConfigScreen.jsx
                 │   ├── DashboardScreen.jsx
-                │   ├── CameraScreen.jsx        ← scanner + WS + overlay de confirmação
+                │   ├── CameraScreen.jsx        ← scanner + WS; captura contínua + chips Gemini no scoreboard
                 │   ├── ManualScreen.jsx
                 │   └── RealtimeScreen.jsx
                 ├── components/
@@ -120,8 +119,9 @@ projeto-1-abrace-ai/
                 │   ├── UserPopup.jsx
                 │   ├── GroupModal.jsx
                 │   ├── KanbanCard.jsx
-                │   ├── DetectionPopup.jsx          ← popup arrastável da câmera
-                │   ├── DetectionConfirmedOverlay.jsx ← overlay animado pós-confirmação + cooldown 3s
+                │   ├── DetectionPopup.jsx          ← popup da câmera (fixo na base)
+                │   ├── SessionItemStatusChip.jsx   ← chip de estado Gemini (validando/validado/corrigido/sem_gemini) por item
+                │   ├── SessionItemsPanel.jsx       ← card lateral esquerdo (scoreboard) com itens da sessão
                 │   ├── ScannerLogPanel.jsx
                 │   └── realtime/
                 │       ├── MetricCards.jsx
@@ -233,24 +233,40 @@ python live_detect_v3.py --model v3_final.pt --source 0 --conf 0.35
                         + ByteTrack
 ```
 
-**Fluxo do scanner (RF02–RF06):** o operador escolhe um grupo na Home Kanban →
-abre Tela do Scanner → informa/usa o `sessao_id` → clica em **Iniciar captura** →
-o front envia frames por WebSocket nativo (~2 FPS, JPEG q=0.6, 640×480) →
-backend roda YOLO em cada frame, envia `preview` com bbox/label/confiança e logs
-ao vivo → quando a bbox fica estável, dispara análise consolidada (YOLO + Gemini
-se o toggle estiver ativo) → front exibe popup com resultado e overlay visual →
-operador confirma → `POST /api/v1/deteccoes/` persiste com `imagem_path`,
-`confianca`, `fonte`, campos Gemini e `alimento_id_original`.
+**Fluxo do scanner (RF02–RF06) — auto-registro assíncrono:** o operador escolhe um
+grupo na Home Kanban → abre Tela do Scanner → informa/usa o `sessao_id` → clica em
+**Iniciar captura** → o front envia frames por WebSocket nativo (~2 FPS, JPEG
+q=0.6, 640×480) → backend roda YOLO em cada frame e envia `preview` com bbox/
+label/confiança → quando a bbox fica estável o suficiente (IoU + `STABILITY_SECONDS`),
+backend aplica **lock** (`LOCK_SECONDS`, ver `estabilidade_service`) e envia
+`status: analisando` (apenas sinal de gatilho; **não** pausa o front) → salva
+evidência (`imagem_path`), faz **INSERT** em `deteccoes` já com YOLO (`fonte=YOLO`,
+`gemini_*` nulos) e envia `deteccao_preliminar` com `deteccao_id` → o front adiciona o
+item em `currentSessionItems` com chip **validando**, toast curto e **flash** no
+`DetectionPopup`; a **captura de frames segue** sem snapshot/congelamento → o Gemini
+roda em **background** (`asyncio.create_task` em `ws_auditoria.py`): ao terminar, o
+backend **UPDATE** na mesma linha (`gemini_*`, e se discordar com classe mapeada troca
+`alimento_id` + `fonte=GEMINI`) e envia `deteccao_atualizada` → o front localiza o item
+por `deteccaoId` e troca o chip silenciosamente para **validado** / **corrigido** /
+**sem_gemini** (tooltip em correção: `nomeOriginal` → `name`). Se Gemini estiver OFF ou
+indisponível, vem `deteccao_atualizada` imediata com `gemini: null`. **`POST
+/api/v1/deteccoes/` não participa** deste fluxo automático (persistência é do próprio WS);
+`criarDeteccao()` em `api.js` fica como legado/testes ou integrações futuras. O botão
+"ADICIONAR" do popup é fallback **manual**: `criarDeteccaoManual()` quando faz sentido +
+campos digitados válidos (`currFood`/`currWeight`).
 
-**Anti-duplicidade (RF04):** três mecanismos combinados — `tracking ID` (ByteTrack)
-+ `zona de detecção` (ROI na UI) + `cooldown temporal`. Toda mudança em qualquer um
-desses três deve preservar a invariante: cada item físico é registrado **uma vez**.
+**Anti-duplicidade (RF04):** mecanismos combinados — `tracking ID` (ByteTrack) quando
+aplicável + `zona de detecção` (ROI na UI) + **lock temporal** no WebSocket
+(`LOCK_SECONDS` após cada disparo de estabilidade). Toda mudança em qualquer um deles
+deve preservar a invariante: cada item físico é registrado **uma vez**.
 
 **Modelo de dados (8 tabelas, ver `bd/diagrama-db.mmd` e `bd/README.md`):**
 `usuarios`, `grupos`, `alunos`, `grupos_alimentos`, `alimentos`, `sessoes`,
-`itens_declarados`, `deteccoes`. `deteccoes.alimento_id_original` preserva a
-classe predita pelo YOLO antes de qualquer correção manual (importante para
-métricas RNF02 e análise de erros).
+`itens_declarados`, `deteccoes`. `deteccoes.alimento_id_original` fixa o alimento
+mapeado no **INSERT** preliminar (YOLO); correções via Gemini (`UPDATE`) podem alterar
+`alimento_id` e `fonte` sem reescrever `alimento_id_original` (importante para métricas
+RNF02 e análise de erros). Correções **manuais** via API de correção seguem o fluxo REST
+dedicado.
 
 ---
 
@@ -299,8 +315,8 @@ métricas RNF02 e análise de erros).
 - **Onde mora cada coisa:**
   - Estado global → `context/AppStateContext.jsx` + `useAppState()`.
   - Side-effects reutilizáveis → `hooks/use*.js` (toasts, localStorage, WS,
-    camera stream, drag popup).
-  - Chamadas HTTP → `services/api.js` (`criarDeteccao`, `finalizarSessao`).
+    camera stream).
+  - Chamadas HTTP → `services/api.js` (`criarDeteccao`, `criarDeteccaoManual`, `finalizarSessao` — auto-captura persiste só pelo WS).
   - Sub-blocos grandes da UI → `components/*` (ex.: `DetectionPopup`,
     `GroupModal`, `KanbanCard`) e `components/realtime/*` para a Visualização Gráfica.
 - **Fluxo do estado.** Estado persistido em `localStorage` sob duas chaves:
@@ -309,22 +325,29 @@ métricas RNF02 e análise de erros).
   initializer** do `useState` para evitar `setState` dentro de `useEffect`
   (regra `react-hooks/set-state-in-effect`).
 - **Câmera (`CameraScreen`).** Usa `hooks/useAuditoriaWS.js` (WebSocket nativo) +
-  `hooks/useCameraStream.js` (getUserMedia) + `hooks/useDraggablePopup.js` para
-  o popup. A captura começa manualmente por botão; **não reintroduza** envio
+  `hooks/useCameraStream.js` (getUserMedia). O `DetectionPopup` é fixo na base da tela.
+  A captura começa manualmente por botão; **não reintroduza** envio
   automático no `onLoadedData` nem simulação hardcoded de alimentos/pesos.
-  Eventos WS relevantes: `frame`, `preview`, `status`, `log`, `erro`,
-  `deteccao`, `reset`.
-- **UX do scanner.** A UI deve manter: botão iniciar/pausar captura, toggle
-  Gemini ON/OFF, overlay de bbox/label YOLO, painel de logs ao vivo,
-  confirmação explícita antes de persistir e o **`DetectionConfirmedOverlay`**
-  com cooldown de `COOLDOWN_PROXIMA_CAPTURA_MS` (3 s) entre confirmar um item e
-  retomar a captura — durante o cooldown a captura fica pausada via
-  `pararCapturaWS()` e o operador pode pular pelo botão.
+  Eventos WS relevantes (servidor → cliente): `preview`, `status`, `deteccao_preliminar`,
+  `deteccao_atualizada`, `log`, `erro` (mensagens cliente → servidor: `frame`,
+  `reset`). O hook expõe `ultimaPreliminar` e `ultimaAtualizacaoGemini`; `CameraScreen`
+  mantém dois `useEffect`s — um faz push na lista ao preliminar, o outro atualiza o chip
+  ao Gemini concluir. **Sem** overlay de fullscreen nem pausa obrigatória durante o ciclo.
+- **UX do scanner (auto-registro assíncrono).** Botão iniciar/pausar captura, toggle
+  Gemini ON/OFF, bbox/label YOLO sobre o vídeo ao vivo, `ScannerLogPanel` (direita),
+  `SessionItemsPanel` (esquerda) e `DetectionPopup` (fixo na base) com lista resumida. Cada
+  item em `currentSessionItems` pode ter `deteccaoId`, `status` (`validando` |
+  `validado` | `corrigido` | `sem_gemini`), `nomeOriginal` e campos opcionais mapeados
+  em `CameraScreen`; o estado visual nos cards é renderizado por `SessionItemStatusChip`.
+  Correção Gemini **não** dispara toast (só atualização discreta da linha); preliminar
+  pode disparar toast curto de confirmação. O fluxo anterior com `DetectionConfirmedOverlay`
+  (snapshot + cooldown 3 s) foi **removido** — não recriar.
 - **Design system** em `src/index.css` com CSS vars (`--primary`, `--dark`,
   `--card`, `--gray-medium`, `--yellow`, etc.) e classes utilitárias custom
   (`btn`, `btn-primary`, `kanban-card`, `realtime-card`, `toast`,
-  `detection-confirmed-*`, `detection-popup-flash`). **Não introduzir**
-  Tailwind/Shadcn sem alinhamento — está no roadmap mas não no MVP atual.
+  `detection-popup-flash`, `session-items-*`, `session-item-chip*`,
+  `scanner-log-panel`, animação `sessionItemsRowEnter` nas novas linhas do scoreboard).
+  **Não introduzir** Tailwind/Shadcn sem alinhamento — está no roadmap mas não no MVP atual.
 - **Ícones:** Phosphor Icons via classes `ph` / `ph-fill` (CDN no `index.html`).
 - **Granularidade.** Ao crescer uma tela, prefira extrair sub-componentes para
   `components/` em vez de inflar o arquivo. Mantenha cada tela ≲ 300 linhas
@@ -339,7 +362,7 @@ métricas RNF02 e análise de erros).
 | Modelos SQLAlchemy      | `PascalCase` singular | `ItemDeclarado`, `Deteccao`       |
 | Schemas Pydantic        | `PascalCase` + sufixo | `DeteccaoCreate`, `DeteccaoResponse` |
 | Endpoints REST          | plural em PT-BR       | `/api/v1/sessoes`, `/api/v1/deteccoes` |
-| Eventos WS              | `snake_case` em PT-BR | `frame`, `preview`, `deteccao`    |
+| Eventos WS              | `snake_case` em PT-BR | `frame`, `preview`, `deteccao_preliminar`, `deteccao_atualizada`, `reset` |
 | Componentes React       | `PascalCase` JSX      | `DeteccaoModal`, `SessionBadge`   |
 | Variáveis JS            | `camelCase`           | `currentSessionItems`, `realtimeStatus` |
 
@@ -380,10 +403,27 @@ Antes de declarar uma tarefa concluída, verifique:
 7. **Não reintroduzir mock de detecção no scanner.** O peso padrão deve vir de
    `alimentos.peso_padrao_kg`; a UI só deve registrar detecções reais vindas do WS
    ou entradas manuais explícitas.
+7.1. **Auto-registro do scanner (WS).** A linha em `deteccoes` é criada no **backend**
+   ao enviar `deteccao_preliminar` (INSERT com YOLO) e enriquecida em background com
+   Gemini (UPDATE + `deteccao_atualizada`). O front **não** deve chamar `criarDeteccao()`
+   nesse fluxo — duplicaria registro. Use `criarDeteccaoManual()` só no fallback quando o
+   operador preenche dados manuais válidos. Tasks `asyncio.create_task` do Gemini podem
+   terminar após o cliente desconectar (UPDATE no banco conclui mesmo se o `send_json`
+   falhar).
+7.2. **Classes YOLO sem mapeamento no banco.** Se o modelo prediz uma `classe_yolo` que não
+   existe (ou difere por grafia) na tabela `alimentos` (`classe_yolo` ativa), o WS loga
+   *“Sem alimento mapeado para a classe — preliminar descartada”* — nada é gravado e a
+   sensação é de “demora” até o modelo estabilizar numa classe cadastrada ou o operador
+   ajustar o seed/mapeamento.
 8. **Modelo YOLO atual tem 15 classes**, mas o documento de concepção fala em 3
    classes base (Arroz/Feijão/Outros). Ao mexer no mapeamento, sincronize:
    `alimentos.classe_yolo` ↔ classes do `v3_final.pt`.
-9. **Regras de lint do front que mordem.** O ESLint do frontend usa
+9. **Sensação de lentidão até “pegar” o objeto.** Somam-se: estabilização por IoU +
+   `STABILITY_SECONDS` com apenas ~2 FPS de frames válidos; movimento do objeto ou da
+   mão; lock
+   `LOCK_SECONDS` após cada disparo; e baixa confiança (~30–45%) aumentando jitter da
+   bbox. Não é necessariamente a API Gemini na primeira lista — ver item 7.2.
+10. **Regras de lint do front que mordem.** O ESLint do frontend usa
    `eslint-plugin-react-hooks` na versão flat/recommended, que ativa duas regras
    menos óbvias:
    - `react-hooks/set-state-in-effect` — **prefira `useState(() => ...)` ou
@@ -395,7 +435,7 @@ Antes de declarar uma tarefa concluída, verifique:
      Provider()` não pode também exportar hook/`createContext` (quebra fast
      refresh). Solução: mover o hook + context para um `.js` irmão (padrão
      atual: `AppStateContext.jsx` + `appStateContextValue.js`).
-10. **Cleanup de refs em hooks.** Em `useEffect`, copie `videoRef.current` para
+11. **Cleanup de refs em hooks.** Em `useEffect`, copie `videoRef.current` para
     uma variável local antes do `return () => ...` — caso contrário o lint
     avisa que o ref já pode ter mudado quando o cleanup roda
     (`react-hooks/exhaustive-deps`). Padrão em `hooks/useCameraStream.js`.
@@ -412,9 +452,9 @@ Antes de declarar uma tarefa concluída, verifique:
 | Tarefas em aberto por área                        | `Documentos/ToDo/TODO-*.md` (cada arquivo nomeia o responsável) |
 | UI atual — estado global                          | `src/Entrega 2/frontend/src/context/AppStateContext.jsx` + `appStateContextValue.js` |
 | UI atual — uma tela específica                    | `src/Entrega 2/frontend/src/screens/<Nome>Screen.jsx`        |
-| UI atual — câmera (scanner + overlay + cooldown)  | `screens/CameraScreen.jsx` + `components/DetectionPopup.jsx` + `components/DetectionConfirmedOverlay.jsx` |
+| UI atual — câmera (scanner contínuo + chips Gemini + scoreboard) | `screens/CameraScreen.jsx` + `hooks/useAuditoriaWS.js` + `components/DetectionPopup.jsx` + `components/SessionItemsPanel.jsx` + `components/SessionItemStatusChip.jsx` |
 | UI atual — visualização gráfica                   | `screens/RealtimeScreen.jsx` + `components/realtime/*`       |
-| Hooks reutilizáveis (toasts, WS, câmera, drag)    | `src/Entrega 2/frontend/src/hooks/`                          |
+| Hooks reutilizáveis (toasts, WS, câmera)          | `src/Entrega 2/frontend/src/hooks/`                          |
 | Demo do modelo de VC                              | `src/Entrega 2/backend/modelo-visao-computacional/live_detect_v3.py` |
 | Roadmap e cronograma de 13 semanas                | `Documentos/AbraceAI_Concepcao_Produto.md` §12.2             |
 
@@ -429,8 +469,9 @@ Antes de declarar uma tarefa concluída, verifique:
 | **Sessão**           | Janela temporal de contagem operada por um usuário (`Sessao`, com `inicio`/`fim`/`status`).  |
 | **Detecção**         | Item registrado pelo YOLO durante uma sessão (`Deteccao`).                                   |
 | **Item declarado**   | Declaração manual feita pelo grupo **antes** da sessão (`ItemDeclarado`).                    |
-| **Cooldown**         | Janela após detectar um item em que o operador pode cancelar/corrigir antes do registro.     |
-| **Cooldown overlay** | Card animado pós-confirmação (`DetectionConfirmedOverlay`) que pausa a captura por 3 s e mostra alimento + peso + totais antes de retomar. |
+| **Cooldown / lock**  | Janela anti-duplicidade no servidor após um disparo (`LOCK_SECONDS` em `EstadoSessao`): novos gatilhos são ignorados até expirar. Distinto do antigo overlay de 3 s (removido). |
+| **Chip Gemini**      | `SessionItemStatusChip`: indica `validando` (background), `validado` (concorda), `corrigido` (tooltip `nomeOriginal` → nome atual) ou `sem_gemini`. |
+| **Scoreboard (sessão)** | `SessionItemsPanel` à esquerda da câmera: métricas (itens, peso) + lista persistente com chips. Usa `currentSessionItems` + handler de remoção compartilhado com o popup. |
 | **Zona de detecção** | Retângulo overlay na UI; só objetos dentro dela são candidatos a contagem.                   |
 | **Auditoria**        | Conferência posterior usando a evidência visual (`imagem_path`) salva em cada detecção.      |
 | **Triagem**          | Sinônimo operacional de "sessão de contagem" usado na UI atual.                              |

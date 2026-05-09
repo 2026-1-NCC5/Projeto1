@@ -63,19 +63,27 @@ nas seções abaixo (que se aplicam apenas ao Claude).
 - PoC atual não usa Auth/JWT/senha: `usuarios` é cadastro simples; endpoints REST e
   WebSocket estão liberados para teste local. Não reintroduza `security.py`,
   `/auth`, `token.py`, `senha_hash` ou `Depends(get_current_active_user)` sem pedido explícito.
-- `deteccoes.alimento_id_original` guarda **o que o YOLO detectou** antes de qualquer
-  correção manual — preserve essa coluna em qualquer migração.
+- `deteccoes.alimento_id_original` fixa o alimento no **INSERT** preliminar (YOLO).
+  O Gemini pode corrigir `alimento_id`/`fonte` em `UPDATE`; preserve `alimento_id_original`
+  em migrações (métricas e auditoria).
 - Anti-duplicidade = **tracking + zona + cooldown** (3 mecanismos combinados,
   RF04). Mexer em um sem revisar os outros é red flag.
 - Scanner atual usa WebSocket nativo em `ws://localhost:8000/ws/auditoria/{sessao_id}`.
-  A captura começa por botão, tem toggle Gemini ON/OFF, pausa/retoma envio de frames,
-  overlay de bbox/label YOLO e painel de logs ao vivo. Não reintroduza Socket.IO nem
-  mock hardcoded de alimentos/pesos na tela de câmera.
-- Após o operador confirmar uma detecção, a `CameraScreen` abre o
-  `DetectionConfirmedOverlay` (card animado + progress bar de 3 s) e pausa o
-  WS via `pararCapturaWS()`. Quando a barra termina (ou o operador clica
-  "Pular"), `iniciarCapturaWS()` retoma. Não remova esse cooldown sem
-  alinhamento — ele é o feedback de UX que separa um item do próximo.
+  A captura começa por botão, tem toggle Gemini ON/OFF, bbox/label YOLO sobre o vídeo ao
+  vivo e painel de logs. **Durante uma detecção bem-sucedida o envio de frames não pausa**
+  (Gemini corre em thread + `asyncio.create_task`). Não reintroduza Socket.IO nem mock
+  hardcoded de alimentos/pesos na tela de câmera.
+- O scanner é **auto-registro assíncrono**: no gatilho de estabilidade o backend faz
+  INSERT em `deteccoes`, envia `deteccao_preliminar` (`deteccao_id`), dispara Gemini em
+  background e só então envia `deteccao_atualizada`. `useAuditoriaWS` expõe `ultimaPreliminar`
+  e `ultimaAtualizacaoGemini` (não use mais `ultimaDeteccao`/`analisandoTs`/`DetectionConfirmedOverlay`).
+  `CameraScreen` adiciona o item ao scoreboard ao preliminar (chip **validando** + toast opcional),
+  atualiza o chip quando a atualização chega (**sem** toast em correção). **Nunca** chame
+  `criarDeteccao()` nesse ciclo automático — duplica linha no banco. Fallback manual via
+  `criarDeteccaoManual()` + campos digitados. Log *“Sem alimento mapeado para a classe”* =
+  classe YOLO sem registro correspondente em `alimentos.classe_yolo` (ajustar seeds/mapeamento).
+- O `SessionItemsPanel` lista itens com `SessionItemStatusChip`; compartilha remoção com o
+  `DetectionPopup`. Simétrico ao `ScannerLogPanel` à direita.
 - Frontend já está modularizado: `App.jsx` é só roteador, telas vivem em
   `src/screens/`, hooks em `src/hooks/`, components em `src/components/` e o
   estado global em `src/context/`. Use `useAppState()` (de
@@ -116,10 +124,9 @@ Para decisões pequenas e reversíveis, escolha a opção mais conservadora e si
   `AppStateContext` + `useAppState`.
 - **`useEffect` que copia `videoRef.current` para variável local** antes do
   cleanup — sem isso, o lint reclama porque o ref pode ter mudado.
-- **`forwardRef` para popups** que precisam de ref externo (ex.:
-  `DetectionPopup`) — para que o hook de drag (`useDraggablePopup`) consiga
-  manipular `style.transform` direto.
-- **Animações pesadas** (`@keyframes`, gradientes, sombras) ficam todas em
-  `index.css` com prefixos namespaced (`detection-confirmed-*`,
-  `detection-popup-flash`); evite `style={{...}}` inline para coisas
-  reutilizáveis.
+- **`forwardRef`** quando um componente precisar expor ref ao pai (o `DetectionPopup`
+  atual não usa ref).
+- **Animações pesadas** (`@keyframes`, gradientes, sombras) ficam em `index.css` com
+  prefixos namespaced (`detection-popup-flash`, `session-item-chip*`,
+  animação das linhas do scoreboard com `sessionItemsRowEnter`); evite `style={{...}}`
+  inline para classes reutilizáveis.

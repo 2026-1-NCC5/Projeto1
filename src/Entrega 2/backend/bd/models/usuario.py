@@ -16,5 +16,8 @@ class Usuario(Base):
     criado_em: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
     sessoes: Mapped[List["Sessao"]] = relationship(
-        "Sessao", back_populates="usuario", cascade="all, delete-orphan"
+        "Sessao",
+        back_populates="usuario",
+        foreign_keys="[Sessao.usuario_id]",
+        cascade="all, delete-orphan",
     )

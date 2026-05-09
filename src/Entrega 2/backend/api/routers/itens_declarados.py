@@ -2,10 +2,11 @@ from typing import List
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
-from api.dependencies import get_db
+from api.dependencies import get_db, get_admin_atual
 from api.schemas.item_declarado import ItemDeclaradoCreate, ItemDeclaradoResponse
 from bd.models.item_declarado import ItemDeclarado
 from bd.models.grupo import Grupo
+from bd.models.usuario import Usuario
 
 router = APIRouter()
 
@@ -14,6 +15,7 @@ router = APIRouter()
 def criar_item_declarado(
     item_in: ItemDeclaradoCreate,
     db: Session = Depends(get_db),
+    _admin: Usuario = Depends(get_admin_atual),
 ):
     """
     Cadastra item que o admin declara que o grupo trouxe (cadastro manual prévio à sessão).
@@ -34,6 +36,7 @@ def criar_item_declarado(
 def listar_por_grupo(
     grupo_id: int,
     db: Session = Depends(get_db),
+    _admin: Usuario = Depends(get_admin_atual),
 ):
     """Lista todos os itens declarados de um grupo (utilizado pela tela de auditoria)."""
     return (
@@ -48,6 +51,7 @@ def listar_por_grupo(
 def deletar_item_declarado(
     id: int,
     db: Session = Depends(get_db),
+    _admin: Usuario = Depends(get_admin_atual),
 ):
     item = db.query(ItemDeclarado).filter(ItemDeclarado.id == id).first()
     if not item:

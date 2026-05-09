@@ -2,9 +2,10 @@ from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
-from api.dependencies import get_db
+from api.dependencies import get_db, get_admin_atual
 from api.schemas.alimento import AlimentoCreate, AlimentoUpdate, AlimentoResponse
 from bd.models.alimento import Alimento
+from bd.models.usuario import Usuario
 
 router = APIRouter()
 
@@ -13,11 +14,9 @@ router = APIRouter()
 def listar_alimentos(
     apenas_ativos: bool = True,
     db: Session = Depends(get_db),
+    _admin: Usuario = Depends(get_admin_atual),
 ):
-    """Lista alimentos cadastrados.
-
-    Sem auth para que o WS possa hidratar a tabela classe_yolo->alimento sem token.
-    """
+    """Lista alimentos cadastrados (requer sessão de admin)."""
     query = db.query(Alimento)
     if apenas_ativos:
         query = query.filter(Alimento.ativo.is_(True))
@@ -28,6 +27,7 @@ def listar_alimentos(
 def criar_alimento(
     alimento_in: AlimentoCreate,
     db: Session = Depends(get_db),
+    _admin: Usuario = Depends(get_admin_atual),
 ):
     """Cadastro de alimento — admin define classe_yolo e peso médio antes da sessão."""
     existente = db.query(Alimento).filter(Alimento.nome == alimento_in.nome).first()
@@ -42,7 +42,11 @@ def criar_alimento(
 
 
 @router.get("/{id}", response_model=AlimentoResponse)
-def detalhar_alimento(id: int, db: Session = Depends(get_db)):
+def detalhar_alimento(
+    id: int,
+    db: Session = Depends(get_db),
+    _admin: Usuario = Depends(get_admin_atual),
+):
     alimento = db.query(Alimento).filter(Alimento.id == id).first()
     if not alimento:
         raise HTTPException(status_code=404, detail="Alimento não encontrado")
@@ -54,6 +58,7 @@ def atualizar_alimento(
     id: int,
     alimento_in: AlimentoUpdate,
     db: Session = Depends(get_db),
+    _admin: Usuario = Depends(get_admin_atual),
 ):
     alimento = db.query(Alimento).filter(Alimento.id == id).first()
     if not alimento:
@@ -73,6 +78,7 @@ def atualizar_alimento(
 def deletar_alimento(
     id: int,
     db: Session = Depends(get_db),
+    _admin: Usuario = Depends(get_admin_atual),
 ):
     alimento = db.query(Alimento).filter(Alimento.id == id).first()
     if not alimento:

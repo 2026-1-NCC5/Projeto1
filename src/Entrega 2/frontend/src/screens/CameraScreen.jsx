@@ -2,28 +2,60 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useAppState } from '../context/appStateContextValue';
 import useAuditoriaWS from '../hooks/useAuditoriaWS';
 import useCameraStream from '../hooks/useCameraStream';
-import useDraggablePopup from '../hooks/useDraggablePopup';
-import { criarDeteccao, finalizarSessao } from '../services/api';
+import {
+  criarDeteccaoManual,
+  finalizarSessao,
+  obterOuCriarSessaoAtiva,
+  obterConciliacaoPreviaSessao,
+  decidirFonteFinalSessao,
+} from '../services/api';
 import { WS_BASE } from '../constants';
 import DetectionPopup from '../components/DetectionPopup';
 import ScannerLogPanel from '../components/ScannerLogPanel';
-import DetectionConfirmedOverlay from '../components/DetectionConfirmedOverlay';
-
-// Tempo de cooldown (em ms) entre confirmar um alimento e retomar a captura
-// automaticamente. O overlay mostra a barra de progresso correspondente.
-const COOLDOWN_PROXIMA_CAPTURA_MS = 3000;
+import SessionItemsPanel from '../components/SessionItemsPanel';
+import FinalizacaoConciliacaoModal from '../components/FinalizacaoConciliacaoModal';
 
 // Tela do scanner: liga câmera, abre WS de auditoria, exibe overlay de
-// bbox/preview YOLO, popup de detecção arrastável e painel de logs.
+// bbox/preview YOLO, popup de detecção fixo na base e painel de logs.
+//
+// Fluxo assíncrono: a captura nunca pausa. Cada gatilho YOLO gera uma
+// `deteccao_preliminar` que entra no scoreboard com chip "validando"; o
+// Gemini roda em background no backend e dispara `deteccao_atualizada`,
+// que troca o chip para "validado" / "corrigido" / "sem_gemini".
 export default function CameraScreen() {
   const {
+    appState,
     activeGroupId,
     auditSessaoId, setAuditSessaoId, auditSessaoIdNumero,
     addToast, setCurrentScreen, setAppState,
   } = useAppState();
 
+  const activeGroup = appState.find((g) => g.id === activeGroupId);
+  const grupoBackendId = activeGroup?.grupoIdBackend;
+
+  useEffect(() => {
+    setCurrentSessionItems([]);
+  }, [activeGroupId]);
+
+  useEffect(() => {
+    if (!activeGroupId || grupoBackendId == null) return;
+    let cancelled = false;
+    (async () => {
+      const r = await obterOuCriarSessaoAtiva(grupoBackendId);
+      if (cancelled) return;
+      if (r.erro) {
+        addToast(r.erro, 'error');
+        return;
+      }
+      if (r.sessaoId != null) {
+        setAuditSessaoId(String(r.sessaoId));
+        if (r.reutilizada) addToast('Sessão ativa deste grupo reaberta.', 'info');
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [activeGroupId, grupoBackendId, addToast, setAuditSessaoId]);
+
   const videoRef = useRef(null);
-  const popupRef = useRef(null);
 
   const [currentSessionItems, setCurrentSessionItems] = useState([]);
   const [usarGemini, setUsarGemini] = useState(true);
@@ -32,28 +64,32 @@ export default function CameraScreen() {
   const [btnLeituraText, setBtnLeituraText] = useState('AGUARDANDO DETECÇÃO');
   const [currFood, setCurrFood] = useState('');
   const [currWeight, setCurrWeight] = useState(0);
-  // Quando != null, mostra o overlay de confirmação animado por 3s e
-  // pausa a captura. Após o cooldown, a captura é retomada automaticamente.
-  const [confirmacao, setConfirmacao] = useState(null);
   // Flag visual: aplica um "flash" no popup principal quando uma detecção
   // nova chega via WS, para chamar atenção do operador.
   const [destaquePopup, setDestaquePopup] = useState(false);
+  const [mostrarLogsAuditoria, setMostrarLogsAuditoria] = useState(true);
+  const [popupMinimizado, setPopupMinimizado] = useState(false);
+  const [modalConciliacaoAberto, setModalConciliacaoAberto] = useState(false);
+  const [modalCarregando, setModalCarregando] = useState(false);
+  const [modalSalvando, setModalSalvando] = useState(false);
+  const [modalErro, setModalErro] = useState('');
+  const [relatorioConciliacao, setRelatorioConciliacao] = useState(null);
 
   // ===== AUDITORIA WS (câmera ↔ FastAPI) =====
   // O hook só conecta quando a tela é 'camera' e há um sessao_id válido.
   const {
     status: auditStatus,
-    ultimaDeteccao,
+    ultimaPreliminar,
+    ultimaAtualizacaoGemini,
     ultimoPreview,
     logs: auditLogs,
     capturando,
     iniciarCaptura: iniciarCapturaWS,
     pararCaptura: pararCapturaWS,
-    reset: resetAuditWS,
     limparLogs: limparAuditLogs,
     registrarLog: registrarAuditLog,
   } = useAuditoriaWS({
-    sessaoId: auditSessaoId,
+    sessaoId: auditSessaoIdNumero > 0 ? auditSessaoId : null,
     videoRef,
     wsBaseUrl: WS_BASE,
     fps: 2,
@@ -73,31 +109,82 @@ export default function CameraScreen() {
     height: `${Math.max(1, ((previewBBox[3] - previewBBox[1]) / 480) * 100)}%`,
   } : null;
 
-  // Quando uma detecção chega, popula o popup existente da câmera.
-  // O estado é mutável depois (o usuário pode rejeitar/limpar), então não dá
-  // para derivar via useMemo puro — sincronizamos via efeito controlado.
+  // 1) Quando o backend confirma a detecção preliminar (YOLO), adicionamos o
+  //    item na lista imediatamente com chip "validando". A captura segue
+  //    sem pausa — o Gemini é processado em background no backend.
   useEffect(() => {
-    if (!ultimaDeteccao) return;
-    const rf = ultimaDeteccao.resultado_final || {};
-    const yolo = ultimaDeteccao.yolo || {};
-    const gemini = ultimaDeteccao.gemini || null;
+    if (!ultimaPreliminar) return;
+    const rf = ultimaPreliminar.resultado_final || {};
+    const yolo = ultimaPreliminar.yolo || {};
     const peso = rf.peso_padrao_kg || 0;
+    const nome = rf.alimento_nome || yolo.classe || 'Desconhecido';
+    const deteccaoId = ultimaPreliminar.deteccao_id;
 
-    const partes = [];
-    if (yolo.confianca != null) partes.push(`YOLO ${Math.round((yolo.confianca || 0) * 100)}%`);
-    if (gemini) {
-      partes.push(gemini.concorda ? 'Gemini concorda' : 'Gemini discordou');
-    }
+    setCurrentSessionItems(prev => [
+      ...prev,
+      {
+        deteccaoId,
+        name: nome,
+        weight: peso,
+        status: 'validando',
+        nomeOriginal: nome,
+        alimento_id: rf.alimento_id,
+        alimento_id_original: rf.alimento_id,
+        imagem_path: ultimaPreliminar.imagem_path,
+      },
+    ]);
 
-    /* eslint-disable react-hooks/set-state-in-effect */
-    setCurrFood(rf.alimento_nome || yolo.classe || 'Desconhecido');
-    setCurrWeight(peso);
-    setLeituraNome(rf.alimento_nome || yolo.classe || 'Desconhecido');
-    setLeituraDesc(`Peso ${peso}kg · ${partes.join(' · ')}`);
-    setBtnLeituraText(`ADICIONAR +${peso}KG`);
     setDestaquePopup(true);
-    /* eslint-enable react-hooks/set-state-in-effect */
-  }, [ultimaDeteccao]);
+    setLeituraNome(nome);
+    setLeituraDesc(`Último: ${nome} · +${Number(peso).toFixed(1)}kg`);
+    setBtnLeituraText('AGUARDANDO DETECÇÃO');
+    setCurrFood('');
+    setCurrWeight(0);
+    addToast(`+${Number(peso).toFixed(1)}kg ${nome} capturado`, 'success');
+  // Reagimos exclusivamente à chegada de uma preliminar nova; demais setters
+  // são estáveis e o efeito deve rodar exatamente uma vez por detecção.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ultimaPreliminar]);
+
+  // 2) Quando o Gemini conclui (ou o backend sinaliza que está OFF),
+  //    procuramos o item correspondente pelo `deteccaoId` e atualizamos o
+  //    chip silenciosamente. Se o Gemini propôs uma classe diferente,
+  //    renomeamos o item e marcamos como "corrigido".
+  useEffect(() => {
+    if (!ultimaAtualizacaoGemini) return;
+    const { deteccao_id, gemini, alimento_nome, alimento_id, fonte } = ultimaAtualizacaoGemini;
+    setCurrentSessionItems(prev => {
+      const idx = prev.findIndex(it => it.deteccaoId === deteccao_id);
+      if (idx < 0) return prev;
+      const atual = prev[idx];
+      let novoStatus = atual.status;
+      let novoNome = atual.name;
+      let novoAlimentoId = atual.alimento_id;
+      if (!gemini) {
+        novoStatus = 'sem_gemini';
+      } else if (gemini.concorda) {
+        novoStatus = 'validado';
+      } else if (alimento_nome) {
+        novoStatus = 'corrigido';
+        novoNome = alimento_nome;
+        novoAlimentoId = alimento_id ?? atual.alimento_id;
+      } else {
+        // Gemini discordou mas não propôs classe nova — mantém YOLO
+        novoStatus = 'sem_gemini';
+      }
+      const atualizado = {
+        ...atual,
+        status: novoStatus,
+        name: novoNome,
+        alimento_id: novoAlimentoId,
+        gemini,
+        fonte: fonte || atual.fonte,
+      };
+      const cpy = prev.slice();
+      cpy[idx] = atualizado;
+      return cpy;
+    });
+  }, [ultimaAtualizacaoGemini]);
 
   // Remove o flash do popup depois da animação (~700ms).
   useEffect(() => {
@@ -119,52 +206,48 @@ export default function CameraScreen() {
     onErro: (err) => registrarAuditLog?.({ stage: 'camera', mensagem: 'Falha ao acessar câmera', dados: { erro: String(err) } }),
   });
 
-  const { handlePopupDown } = useDraggablePopup({ ativo: true, popupRef });
-
   const handleToggleCapture = () => {
     if (capturando) {
       pararCapturaWS();
       return;
     }
+    if (auditSessaoIdNumero <= 0) {
+      addToast('Preparando sessão ativa... tente novamente em instantes.', 'warning');
+      return;
+    }
     iniciarCapturaWS();
   };
 
+  // Fallback manual: registra um item caso o operador queira adicionar algo
+  // sem detecção automática (ou caso queira corrigir após digitar). Como a
+  // captura não pausa mais, este handler só persiste via REST manual e
+  // adiciona o item localmente; nada mais.
   const handleSimularClick = async () => {
     if (!currFood || currWeight <= 0) return;
 
-    // Pausa a captura enquanto mostramos o overlay de confirmação. Evita que
-    // novos frames disparem detecções enquanto o operador absorve o feedback.
-    pararCapturaWS();
-
-    // Adiciona localmente para a UI atualizar imediatamente
-    const novoItem = { name: currFood, weight: currWeight };
-    const novosItens = [...currentSessionItems, novoItem];
-    setCurrentSessionItems(novosItens);
-
-    // Snapshot dos dados para o overlay (currFood/currWeight são limpos abaixo).
-    const snapshot = {
-      alimento: currFood,
-      peso: currWeight,
-      categoria: ultimaDeteccao?.resultado_final?.categoria
-        || ultimaDeteccao?.yolo?.categoria
-        || null,
-      geminiConcorda: ultimaDeteccao?.gemini ? !!ultimaDeteccao.gemini.concorda : null,
-      totalCapturados: novosItens.length,
-      pesoTotalSessao: novosItens.reduce((acc, it) => acc + (it.weight || 0), 0),
+    const novoItem = {
+      deteccaoId: null,
+      name: currFood,
+      weight: currWeight,
+      status: 'sem_gemini',
+      nomeOriginal: currFood,
+      alimento_id: null,
+      alimento_id_original: null,
+      fonte: 'MANUAL',
     };
-    setConfirmacao(snapshot);
+    setCurrentSessionItems(prev => [...prev, novoItem]);
 
-    // Persiste no backend quando há uma detecção real (vinda do WS).
-    if (ultimaDeteccao && ultimaDeteccao.resultado_final && ultimaDeteccao.resultado_final.alimento_id) {
+    if (auditSessaoIdNumero > 0 && ultimaPreliminar?.resultado_final?.alimento_id) {
       try {
-        const r = await criarDeteccao({
+        const r = await criarDeteccaoManual({
           sessaoIdNumero: auditSessaoIdNumero,
-          deteccao: ultimaDeteccao,
-          currWeight,
-          currFood,
+          alimentoId: ultimaPreliminar.resultado_final.alimento_id,
+          peso_kg: currWeight,
+          alimentoIdOriginal: ultimaPreliminar.resultado_final.alimento_id,
+          fonte: 'MANUAL',
         });
         if (!r.ok) {
-          addToast(`Falha ao registrar (${r.status})`, 'error');
+          addToast(`Falha ao registrar manual (${r.status})`, 'error');
         } else {
           addToast(`+${currWeight}kg ${currFood} registrado`, 'success');
         }
@@ -178,28 +261,44 @@ export default function CameraScreen() {
     setLeituraNome('Buscando próximo...');
     setLeituraDesc('--');
     setBtnLeituraText('AGUARDANDO DETECÇÃO');
-    resetAuditWS();
   };
 
-  // Fecha o overlay de confirmação e retoma a captura. Chamado tanto pelo
-  // término da progress bar quanto pelo botão "Pular".
-  const concluirCooldown = () => {
-    setConfirmacao(null);
-    iniciarCapturaWS();
-  };
-
-  const handleRejectClick = () => {
-    setLeituraNome('Descartado. Buscando...');
-    setLeituraDesc('--');
-    setBtnLeituraText('AGUARDANDO DETECÇÃO');
-    resetAuditWS();
-  };
-
-  const handleFinishCount = async () => {
-    if (activeGroupId && currentSessionItems.length > 0) {
+  const aplicarNoKanban = (fonteFinal, relatorio) => {
+    if (!activeGroupId) return;
+    if (fonteFinal === 'manual' && relatorio) {
+      const itensManuais = [];
+      relatorio.linhas.forEach((linha) => {
+        if (!linha.qtd_declarada || linha.qtd_declarada <= 0) return;
+        const qtd = linha.qtd_declarada;
+        const pesoTotal = Number(linha.peso_declarado_kg || 0);
+        const pesoUnitario = qtd > 0 ? Number((pesoTotal / qtd).toFixed(2)) : pesoTotal;
+        for (let i = 0; i < qtd; i += 1) {
+          itensManuais.push({ name: linha.alimento_nome, weight: pesoUnitario });
+        }
+      });
+      if (itensManuais.length === 0) return;
       setAppState(prev => prev.map(group => {
         if (group.id === activeGroupId) {
-          const newItems = [...group.items, ...currentSessionItems];
+          const newItems = [...group.items, ...itensManuais];
+          const addedKg = itensManuais.reduce((acc, obj) => acc + obj.weight, 0);
+          return {
+            ...group,
+            items: newItems,
+            totalKg: parseFloat((group.totalKg + addedKg).toFixed(2))
+          };
+        }
+        return group;
+      }));
+      return;
+    }
+
+    if (currentSessionItems.length > 0) {
+      setAppState(prev => prev.map(group => {
+        if (group.id === activeGroupId) {
+          // Sanitiza itens para o shape do appState ({ name, weight }) — campos
+          // de tracking (deteccaoId, status, gemini) só importam na tela do scanner.
+          const novosSimples = currentSessionItems.map(it => ({ name: it.name, weight: it.weight }));
+          const newItems = [...group.items, ...novosSimples];
           const addedKg = currentSessionItems.reduce((acc, obj) => acc + obj.weight, 0);
           return {
             ...group,
@@ -210,23 +309,82 @@ export default function CameraScreen() {
         return group;
       }));
     }
+  };
+
+  const finalizarComFonte = async (fonteFinal) => {
+    if (auditSessaoIdNumero <= 0) {
+      addToast('Sessão inválida para finalizar.', 'error');
+      return;
+    }
+    setModalSalvando(true);
     try {
+      const decisaoResp = await decidirFonteFinalSessao({
+        sessaoIdNumero: auditSessaoIdNumero,
+        fonteFinal,
+      });
+      if (!decisaoResp.ok) {
+        addToast(`Falha ao salvar decisão final (${decisaoResp.status})`, 'error');
+        return;
+      }
+      aplicarNoKanban(fonteFinal, relatorioConciliacao);
       const r = await finalizarSessao(auditSessaoIdNumero);
       if (!r.ok) {
         addToast(`Falha ao finalizar sessão (${r.status})`, 'error');
-      } else {
-        addToast('Sessão finalizada no backend.', 'success');
+        return;
       }
+      addToast('Sessão finalizada e consolidada.', 'success');
+      pararCapturaWS();
+      setModalConciliacaoAberto(false);
+      setCurrentScreen('dashboard');
     } catch {
-      addToast('Backend indisponível — sessão não finalizada.', 'warning');
+      addToast('Backend indisponível ao finalizar conferência.', 'warning');
+    } finally {
+      setModalSalvando(false);
     }
-    pararCapturaWS();
-    setCurrentScreen('dashboard');
+  };
+
+  const handleAbrirConciliacao = async () => {
+    if (auditSessaoIdNumero <= 0) {
+      addToast('Sessão inválida. Aguarde a abertura da sessão ativa.', 'error');
+      return;
+    }
+    setModalConciliacaoAberto(true);
+    setModalErro('');
+    setRelatorioConciliacao(null);
+    setModalCarregando(true);
+    try {
+      const preview = await obterConciliacaoPreviaSessao(auditSessaoIdNumero);
+      if (!preview.ok || !preview.data) {
+        setModalErro('Não foi possível carregar a conferência desta sessão.');
+        return;
+      }
+      setRelatorioConciliacao(preview.data);
+    } catch {
+      setModalErro('Erro ao comparar declarado e capturado.');
+    } finally {
+      setModalCarregando(false);
+    }
+  };
+
+  const handleFinishCount = async () => {
+    await handleAbrirConciliacao();
+  };
+
+  const handleConfirmarManual = async () => {
+    await finalizarComFonte('manual');
+  };
+
+  const handleConfirmarCapturas = async () => {
+    await finalizarComFonte('capturas');
   };
 
   const handleSair = () => {
     pararCapturaWS();
     setCurrentScreen('dashboard');
+  };
+
+  const handleRemoverItem = (index) => {
+    setCurrentSessionItems(prev => prev.filter((_, i) => i !== index));
   };
 
   return (
@@ -245,24 +403,17 @@ export default function CameraScreen() {
         <button className="btn-icon circle-bg-dark border border-gray-medium shadow-sm transition hover:bg-white/10" onClick={handleSair}>
           <i className="ph ph-arrow-left text-white text-xl"></i>
         </button>
-        <div className="text-xs font-bold text-white bg-black/60 backdrop-blur px-3 py-1.5 rounded-full border border-gray-medium shadow flex align-center gap-2">
-          <div className="pulse-dot"></div>
-          GRUPO {activeGroupId} · SESSÃO
-          <input
-            type="number"
-            min="1"
-            value={auditSessaoId}
-            onChange={(e) => {
-              const next = e.target.value;
-              if (/^\d*$/.test(next)) setAuditSessaoId(next);
-            }}
-            onBlur={() => {
-              if (!auditSessaoId || Number(auditSessaoId) < 1) setAuditSessaoId('1');
-            }}
-            style={{ width: '60px', background: 'transparent', color: 'white', border: '1px solid rgba(255,255,255,0.2)', borderRadius: '4px', padding: '0 4px' }}
-            title="ID da sessão criada via /api/v1/sessoes (Swagger)"
-          />
-          · {auditStatus.toUpperCase()}
+        <div className="sessao-header-badge sessao-header-badge--camera border border-gray-medium shadow flex-shrink-0">
+          <div className="pulse-dot flex-shrink-0"></div>
+          <div className="sessao-header-badge-text">
+            <span className="sessao-header-badge-group">{activeGroup?.title || activeGroupId}</span>
+            <span className="sessao-header-badge-sep" aria-hidden="true">·</span>
+            <span className="sessao-header-badge-sessao text-gray">
+              sessão #{auditSessaoIdNumero > 0 ? auditSessaoIdNumero : '...'}
+            </span>
+            <span className="sessao-header-badge-sep" aria-hidden="true">·</span>
+            <span className="sessao-header-badge-status">{auditStatus.toUpperCase()}</span>
+          </div>
         </div>
         <div style={{ width: '36px' }}></div>
       </header>
@@ -291,20 +442,27 @@ export default function CameraScreen() {
           <span className="scanner-toggle-dot"></span>
           Modelo {capturando ? 'capturando' : 'pausado'}
         </button>
+        <button
+          className={`scanner-toggle ${mostrarLogsAuditoria ? 'active' : ''}`}
+          onClick={() => setMostrarLogsAuditoria((v) => !v)}
+          type="button"
+          title={mostrarLogsAuditoria ? 'Ocultar painel de logs ao vivo' : 'Mostrar painel de logs ao vivo'}
+        >
+          <span className="scanner-toggle-dot"></span>
+          Logs {mostrarLogsAuditoria ? 'visíveis' : 'ocultos'}
+        </button>
       </div>
 
-      <div className="flex-grow flex align-center justify-center relative w-full h-full pointer-events-none z-10">
-        <div className="scan-frame relative pointer-events-none">
-          <div className="corner top-left"></div>
-          <div className="corner top-right"></div>
-          <div className="corner bottom-left"></div>
-          <div className="corner bottom-right"></div>
-          <div className="scan-line"></div>
+      {capturando && (
+        <div className="camera-capturing-indicator-host">
+          <div className="camera-capturing-indicator" role="status" aria-live="polite">
+            <span className="pulse-dot" aria-hidden></span>
+            <span>Capturando</span>
+          </div>
         </div>
-      </div>
+      )}
 
       <DetectionPopup
-        ref={popupRef}
         capturando={capturando}
         leituraNome={leituraNome}
         leituraDesc={leituraDesc}
@@ -312,26 +470,46 @@ export default function CameraScreen() {
         btnLeituraText={btnLeituraText}
         currentSessionItems={currentSessionItems}
         destaque={destaquePopup}
-        onPopupDown={handlePopupDown}
+        minimizado={popupMinimizado}
         onSimular={handleSimularClick}
-        onReject={handleRejectClick}
-        onRemoverItem={(index) => setCurrentSessionItems(prev => prev.filter((_, i) => i !== index))}
+        onToggleMinimizado={() => setPopupMinimizado((v) => !v)}
+        onRemoverItem={handleRemoverItem}
         onFinalizar={handleFinishCount}
       />
 
-      <ScannerLogPanel logs={auditLogs} onLimpar={limparAuditLogs} />
+      <SessionItemsPanel
+        items={currentSessionItems}
+        pesoTotal={pesoTotalSessao}
+        onRemoverItem={handleRemoverItem}
+      />
 
-      <DetectionConfirmedOverlay
-        visivel={!!confirmacao}
-        alimento={confirmacao?.alimento}
-        peso={confirmacao?.peso}
-        categoria={confirmacao?.categoria}
-        geminiConcorda={confirmacao?.geminiConcorda}
-        totalCapturados={confirmacao?.totalCapturados ?? currentSessionItems.length}
-        pesoTotalSessao={confirmacao?.pesoTotalSessao ?? pesoTotalSessao}
-        duracaoMs={COOLDOWN_PROXIMA_CAPTURA_MS}
-        onConcluir={concluirCooldown}
-        onPular={concluirCooldown}
+      {mostrarLogsAuditoria ? (
+        <ScannerLogPanel
+          logs={auditLogs}
+          onLimpar={limparAuditLogs}
+          onOcultar={() => setMostrarLogsAuditoria(false)}
+        />
+      ) : (
+        <button
+          type="button"
+          className="scanner-log-reveal-tab"
+          onClick={() => setMostrarLogsAuditoria(true)}
+          title="Mostrar logs ao vivo (WebSocket / YOLO / API)"
+        >
+          <i className="ph ph-sidebar-simple text-lg" aria-hidden></i>
+          <span>Logs</span>
+        </button>
+      )}
+
+      <FinalizacaoConciliacaoModal
+        aberto={modalConciliacaoAberto}
+        carregando={modalCarregando}
+        erro={modalErro}
+        relatorio={relatorioConciliacao}
+        salvando={modalSalvando}
+        onFechar={() => !modalSalvando && setModalConciliacaoAberto(false)}
+        onConfirmarManual={handleConfirmarManual}
+        onConfirmarCapturas={handleConfirmarCapturas}
       />
     </div>
   );

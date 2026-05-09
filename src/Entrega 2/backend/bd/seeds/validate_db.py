@@ -16,6 +16,7 @@ def check_tables():
         "grupos_alimentos",
         "alimentos",
         "sessoes",
+        "sessoes_auth",
         "itens_declarados",
         "deteccoes",
     }
@@ -24,7 +25,7 @@ def check_tables():
     if missing:
         print(f"❌ Tabelas faltando: {missing}")
         return False
-    print(f"✅ Todas as {len(expected_tables)} tabelas presentes.")
+    print(f"✅ Todas as {len(expected_tables)} tabelas esperadas presentes.")
     return True
 
 

@@ -1,21 +1,22 @@
 from typing import List
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
-from api.dependencies import get_db
+from api.dependencies import get_db, get_admin_atual
 from api.schemas.deteccao import DeteccaoCreate, DeteccaoResponse, DeteccaoCorrecao
 from bd.models.deteccao import Deteccao
 from bd.models.sessao import Sessao
+from bd.models.usuario import Usuario
 
 router = APIRouter()
 
 @router.post("/", response_model=DeteccaoResponse)
 def create_deteccao(
     deteccao_in: DeteccaoCreate,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    _admin: Usuario = Depends(get_admin_atual),
 ):
     """
-    Cria uma nova detecção (usado pelo sistema de IA)
-    Não exige autenticação por padrão para facilitar integração com o script da câmera.
+    Cria uma nova detecção (uso manual / integrações; fluxo WS persiste no handler).
     """
     sessao = db.query(Sessao).filter(Sessao.id == deteccao_in.sessao_id).first()
     if not sessao:
@@ -45,6 +46,7 @@ def corrigir_deteccao(
     id: int,
     correcao_in: DeteccaoCorrecao,
     db: Session = Depends(get_db),
+    _admin: Usuario = Depends(get_admin_atual),
 ):
     """
     Corrige manualmente uma classificação de alimento

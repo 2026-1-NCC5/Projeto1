@@ -2,16 +2,18 @@ import { useEffect, useRef, useState, useCallback } from 'react';
 
 /**
  * Conecta-se ao WebSocket nativo do FastAPI (`ws://<host>/ws/auditoria/{sessaoId}`),
- * envia frames base64 a 2 FPS a partir do <video> referenciado e expõe a última
- * detecção/status recebida do backend.
+ * envia frames base64 a 2 FPS a partir do <video> referenciado e expõe os
+ * eventos do pipeline assíncrono (preliminar + atualização do Gemini).
  *
  * Mensagens vindas do servidor (ver api/routers/ws_auditoria.py):
- *  - { tipo: 'status',   estado: 'monitorando'|'estavel'|'analisando'|'lock', lock_ate_ts }
- *  - { tipo: 'deteccao', yolo, gemini, resultado_final, imagem_path, ts }
- *  - { tipo: 'erro',     stage, mensagem }
+ *  - { tipo: 'preview',              yolo }
+ *  - { tipo: 'status',               estado, lock_ate_ts }
+ *  - { tipo: 'deteccao_preliminar',  deteccao_id, yolo, resultado_final, imagem_path, ts }
+ *  - { tipo: 'deteccao_atualizada',  deteccao_id, gemini, alimento_id, alimento_nome, fonte, ts }
+ *  - { tipo: 'log' | 'erro',         ... }
  *
  * @param {{ sessaoId: number|string|null, videoRef: React.RefObject<HTMLVideoElement>,
- *           wsBaseUrl?: string, fps?: number, ativo?: boolean }} params
+ *           wsBaseUrl?: string, fps?: number, ativo?: boolean, usarGemini?: boolean }} params
  */
 export default function useAuditoriaWS({
   sessaoId,
@@ -27,7 +29,13 @@ export default function useAuditoriaWS({
   const usarGeminiRef = useRef(usarGemini);
 
   const [status, setStatus] = useState('offline');
-  const [ultimaDeteccao, setUltimaDeteccao] = useState(null);
+  // Detecção preliminar (YOLO já registrado no banco; Gemini ainda em
+  // background). CameraScreen reage a essa mudança adicionando o item no
+  // scoreboard com chip "validando".
+  const [ultimaPreliminar, setUltimaPreliminar] = useState(null);
+  // Atualização de uma detecção depois que o Gemini concluiu (ou foi
+  // pulado). Inclui `deteccao_id` para casar com o item já adicionado.
+  const [ultimaAtualizacaoGemini, setUltimaAtualizacaoGemini] = useState(null);
   const [ultimoErro, setUltimoErro] = useState(null);
   const [ultimoPreview, setUltimoPreview] = useState(null);
   const [logs, setLogs] = useState([]);
@@ -97,11 +105,20 @@ export default function useAuditoriaWS({
       } catch {
         return;
       }
-      if (msg.tipo === 'deteccao') {
-        setUltimaDeteccao(msg);
+      if (msg.tipo === 'deteccao_preliminar') {
+        setUltimaPreliminar(msg);
         adicionarLog({
           stage: 'resultado',
-          mensagem: `Detecção: ${msg.resultado_final?.alimento_nome || 'desconhecido'}`,
+          mensagem: `Preliminar: ${msg.resultado_final?.alimento_nome || 'desconhecido'} (#${msg.deteccao_id})`,
+          dados: msg,
+        });
+      } else if (msg.tipo === 'deteccao_atualizada') {
+        setUltimaAtualizacaoGemini(msg);
+        adicionarLog({
+          stage: 'gemini',
+          mensagem: msg.gemini
+            ? `Gemini ${msg.gemini.concorda ? 'concordou' : 'corrigiu'} #${msg.deteccao_id}`
+            : `Gemini sem retorno para #${msg.deteccao_id}`,
           dados: msg,
         });
       } else if (msg.tipo === 'preview') {
@@ -185,7 +202,8 @@ export default function useAuditoriaWS({
     if (ws && ws.readyState === WebSocket.OPEN) {
       ws.send(JSON.stringify({ tipo: 'reset' }));
     }
-    setUltimaDeteccao(null);
+    setUltimaPreliminar(null);
+    setUltimaAtualizacaoGemini(null);
     adicionarLog({ stage: 'front', mensagem: 'Reset enviado ao backend' });
   }, [adicionarLog]);
 
@@ -195,7 +213,8 @@ export default function useAuditoriaWS({
 
   return {
     status,
-    ultimaDeteccao,
+    ultimaPreliminar,
+    ultimaAtualizacaoGemini,
     ultimoErro,
     ultimoPreview,
     logs,

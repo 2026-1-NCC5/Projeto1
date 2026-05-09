@@ -1,16 +1,25 @@
 """WebSocket /ws/auditoria/{sessao_id}: pipeline câmera → YOLO → Gemini.
 
 Mensagens cliente → servidor:
-- {"tipo": "frame", "ts": <ms>, "imagem_b64": "data:image/jpeg;base64,..."}
+- {"tipo": "frame", "ts": <ms>, "imagem_b64": "data:image/jpeg;base64,...", "usar_gemini": bool}
 - {"tipo": "reset"} (libera lock cedo, reinicia estabilidade)
 
 Mensagens servidor → cliente:
+- {"tipo": "preview", "ts": <ms>, "yolo": {...}|null}
 - {"tipo": "status", "estado": "monitorando"|"estavel"|"analisando"|"lock", "lock_ate_ts": <ms>}
-- {"tipo": "deteccao", ... payload completo (ver plano §3.2) ...}
+- {"tipo": "deteccao_preliminar", "deteccao_id": int, "yolo": {...}, "resultado_final": {...}, "imagem_path": str, "ts": <ms>}
+- {"tipo": "deteccao_atualizada", "deteccao_id": int, "gemini": {...}|null, "alimento_id": int|null, "alimento_nome": str|null, "fonte": "YOLO"|"GEMINI", "ts": <ms>}
+- {"tipo": "log", "stage": str, "mensagem": str, "dados": {...}, "ts": <ms>}
 - {"tipo": "erro", "stage": "yolo"|"gemini"|"io", "mensagem": "..."}
 
-Não exige autenticação (compatível com `POST /api/v1/deteccoes/`) para
-simplificar a integração da câmera no PoC.
+O fluxo é assíncrono: ao bater o gatilho de estabilidade, persistimos uma
+detecção preliminar com a classe YOLO e disparamos o Gemini em background
+(`asyncio.create_task`). O frontend reage à `deteccao_preliminar`
+imediatamente (mostra o item na lista, segue capturando) e atualiza o item
+quando a `deteccao_atualizada` chegar.
+
+Requer cookie de sessão de admin válido; a sessão de triagem (`sessao_id`)
+deve ter sido aberta pelo mesmo usuário (`sessoes.usuario_id`).
 """
 from __future__ import annotations
 
@@ -22,7 +31,9 @@ from typing import Any, Optional
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 from api.core.config import settings
-from api.dependencies import get_db
+from api.services.auth_service import (
+    obter_usuario_por_token as auth_obter_usuario_por_token,
+)
 from api.services.estabilidade_service import (
     EstadoSessao,
     avaliar_fallback_sem_yolo,
@@ -33,31 +44,12 @@ from api.services.evidencia_service import salvar_evidencia
 from api.services.gemini_service import get_gemini_service
 from api.services.yolo_service import get_yolo_service
 from bd.models.alimento import Alimento
+from bd.models.database import SessionLocal
+from bd.models.deteccao import Deteccao
 from bd.models.sessao import Sessao
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
-
-
-def _resolver_classe_final(
-    palpite_yolo: Optional[dict[str, Any]],
-    gemini_out: Optional[dict[str, Any]],
-) -> tuple[Optional[str], str]:
-    """Decide a classe final + a fonte (YOLO|GEMINI|DESCONHECIDO).
-
-    Regras (ordem importa):
-    1. YOLO + Gemini concordando -> classe do YOLO, fonte=YOLO.
-    2. Gemini propôs uma classe (concorda=False ou YOLO sem palpite) -> classe=Gemini, fonte=GEMINI.
-    3. Apenas YOLO -> classe=YOLO, fonte=YOLO.
-    4. Nada -> (None, DESCONHECIDO).
-    """
-    if palpite_yolo and gemini_out and gemini_out.get("concorda"):
-        return palpite_yolo["classe"], "YOLO"
-    if gemini_out and gemini_out.get("classe"):
-        return gemini_out["classe"], "GEMINI"
-    if palpite_yolo:
-        return palpite_yolo["classe"], "YOLO"
-    return None, "DESCONHECIDO"
 
 
 def _hidratar_classes(db) -> dict[str, Alimento]:
@@ -94,14 +86,91 @@ def _log_payload(stage: str, mensagem: str, **dados: Any) -> dict[str, Any]:
     }
 
 
+async def _processar_gemini_em_background(
+    websocket: WebSocket,
+    deteccao_id: int,
+    jpeg_bytes: bytes,
+    palpite: Optional[dict[str, Any]],
+    classes_validas: list[str],
+    classes_db: dict[str, Alimento],
+    gemini: Any,
+) -> None:
+    """Roda Gemini em thread separada, atualiza a detecção no banco e
+    notifica o cliente via WS (best-effort).
+
+    Aberto seu próprio SessionLocal pois a sessão DB do handler já foi
+    fechada antes do gather. Falhas no envio WS (cliente desconectou)
+    são silenciosas — o UPDATE no banco já completou.
+    """
+    try:
+        gemini_out = await asyncio.to_thread(
+            gemini.validar, jpeg_bytes, palpite, classes_validas
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Gemini falhou em background (det=%s): %s", deteccao_id, exc)
+        gemini_out = None
+
+    db = SessionLocal()
+    novo_alimento_nome: Optional[str] = None
+    try:
+        deteccao = db.get(Deteccao, deteccao_id)
+        if deteccao is None:
+            return
+        if gemini_out is not None:
+            deteccao.gemini_concorda = bool(gemini_out.get("concorda"))
+            deteccao.gemini_classe = gemini_out.get("classe")
+            deteccao.gemini_justificativa = gemini_out.get("justificativa")
+            if not gemini_out.get("concorda") and gemini_out.get("classe"):
+                novo_alimento = classes_db.get(gemini_out["classe"])
+                if novo_alimento is not None and novo_alimento.id != deteccao.alimento_id:
+                    deteccao.alimento_id = novo_alimento.id
+                    deteccao.fonte = "GEMINI"
+                    novo_alimento_nome = novo_alimento.nome
+        db.commit()
+        db.refresh(deteccao)
+        fonte_atual = deteccao.fonte
+        alimento_id_atual = deteccao.alimento_id
+    except Exception:
+        logger.exception("Falha ao atualizar detecção %s com Gemini", deteccao_id)
+        db.rollback()
+        return
+    finally:
+        db.close()
+
+    try:
+        await websocket.send_json({
+            "tipo": "deteccao_atualizada",
+            "deteccao_id": deteccao_id,
+            "gemini": gemini_out,
+            "alimento_id": alimento_id_atual,
+            "alimento_nome": novo_alimento_nome,
+            "fonte": fonte_atual,
+            "ts": int(time.time() * 1000),
+        })
+    except Exception:
+        # WS pode ter fechado antes do background concluir — ok, o UPDATE persistiu.
+        pass
+
+
 @router.websocket("/auditoria/{sessao_id}")
 async def ws_auditoria(websocket: WebSocket, sessao_id: int):
     await websocket.accept()
 
-    # Valida sessão antes de aceitar tráfego pesado
-    db_gen = get_db()
-    db = next(db_gen)
+    db = SessionLocal()
     try:
+        token = websocket.cookies.get(settings.AUTH_COOKIE_NAME)
+        usuario = auth_obter_usuario_por_token(db, token, renovar_acesso=True)
+        if usuario is None:
+            await websocket.send_json(
+                {
+                    "tipo": "erro",
+                    "stage": "io",
+                    "mensagem": "Não autenticado ou sessão expirada",
+                }
+            )
+            await websocket.close(code=4401)
+            return
+
         sessao = db.query(Sessao).filter(Sessao.id == sessao_id).first()
         if not sessao:
             await websocket.send_json(
@@ -115,12 +184,19 @@ async def ws_auditoria(websocket: WebSocket, sessao_id: int):
             )
             await websocket.close(code=4400)
             return
+        if sessao.usuario_id is not None and sessao.usuario_id != usuario.id:
+            await websocket.send_json(
+                {
+                    "tipo": "erro",
+                    "stage": "io",
+                    "mensagem": "Sessão de triagem vinculada a outro administrador",
+                }
+            )
+            await websocket.close(code=4403)
+            return
         classes_db = _hidratar_classes(db)
     finally:
-        try:
-            next(db_gen)
-        except StopIteration:
-            pass
+        db.close()
 
     # Carrega serviços (YOLO é pesado — singleton lazy garante uma única carga).
     try:
@@ -216,7 +292,7 @@ async def ws_auditoria(websocket: WebSocket, sessao_id: int):
                 })
                 continue
 
-            # 2) Lock imediato anti-duplicidade
+            # 2) Lock imediato anti-duplicidade (mesma janela visual de antes)
             estado.liberar_lock_em(settings.LOCK_SECONDS)
             await websocket.send_json({
                 "tipo": "status",
@@ -226,14 +302,14 @@ async def ws_auditoria(websocket: WebSocket, sessao_id: int):
             await websocket.send_json(
                 _log_payload(
                     "yolo",
-                    "Objeto estável, iniciando análise",
+                    "Objeto estável, registrando preliminar",
                     classe=palpite.get("classe") if palpite else None,
                     confianca=palpite.get("confianca") if palpite else None,
                     gemini_ativado=usar_gemini and gemini is not None,
                 )
             )
 
-            # 3) Codifica JPEG para Gemini + evidência
+            # 3) Codifica JPEG (para evidência + futura análise Gemini)
             try:
                 jpeg_bytes = yolo.codificar_jpeg(frame, qualidade=85)
             except Exception as exc:
@@ -244,63 +320,113 @@ async def ws_auditoria(websocket: WebSocket, sessao_id: int):
                 estado.reset()
                 continue
 
-            # 4) Gemini (em thread separada para não bloquear o event loop)
-            gemini_out: Optional[dict[str, Any]] = None
-            if gemini is not None and usar_gemini:
-                try:
-                    gemini_out = await asyncio.to_thread(
-                        gemini.validar, jpeg_bytes, palpite, classes_validas
-                    )
-                    await websocket.send_json(
-                        _log_payload(
-                            "gemini",
-                            "Gemini respondeu",
-                            classe=gemini_out.get("classe") if gemini_out else None,
-                            concorda=gemini_out.get("concorda") if gemini_out else None,
-                        )
-                    )
-                except Exception as exc:
-                    logger.warning("Gemini falhou: %s", exc)
-                    gemini_out = None
-                    await websocket.send_json(
-                        {"tipo": "erro", "stage": "gemini", "mensagem": str(exc)}
-                    )
-            elif usar_gemini and gemini is None:
-                await websocket.send_json(
-                    _log_payload("gemini", "Gemini indisponível: GEMINI_API_KEY ausente")
-                )
-
-            # 5) Persistência da evidência visual
+            # 4) Persistência da evidência visual
             imagem_path = salvar_evidencia(sessao_id, jpeg_bytes)
 
-            # 6) Resolução final + lookup de alimento
-            classe_final, fonte = _resolver_classe_final(palpite, gemini_out)
-            alimento = classes_db.get(classe_final) if classe_final else None
-            resultado_final = {
-                "alimento_id": alimento.id if alimento else None,
-                "alimento_nome": alimento.nome if alimento else "(desconhecido)",
-                "classe_yolo": classe_final,
-                "fonte": fonte,
-                "peso_padrao_kg": float(alimento.peso_padrao_kg) if alimento else 0.0,
-            }
+            # 5) INSERT preliminar com YOLO (gemini_* fica null até background task)
+            alimento_yolo = (
+                classes_db.get(palpite["classe"]) if palpite and palpite.get("classe") else None
+            )
+            if alimento_yolo is None:
+                # Sem classe YOLO mapeada: não dá pra registrar preliminar; pula.
+                # Ainda assim mantemos o lock para evitar que o mesmo frame
+                # dispare imediatamente outra rodada.
+                await websocket.send_json(
+                    _log_payload(
+                        "yolo",
+                        "Sem alimento mapeado para a classe — preliminar descartada",
+                        classe=palpite.get("classe") if palpite else None,
+                    )
+                )
+                estado.reset()
+                continue
 
+            db_persist = SessionLocal()
+            try:
+                deteccao = Deteccao(
+                    sessao_id=sessao_id,
+                    alimento_id=alimento_yolo.id,
+                    alimento_id_original=alimento_yolo.id,
+                    peso_kg=float(alimento_yolo.peso_padrao_kg or 0.0),
+                    quantidade=1,
+                    confianca=(palpite.get("confianca") if palpite else None),
+                    imagem_path=imagem_path,
+                    corrigido_manualmente=False,
+                    fonte="YOLO",
+                    gemini_concorda=None,
+                    gemini_classe=None,
+                    gemini_justificativa=None,
+                )
+                db_persist.add(deteccao)
+                db_persist.commit()
+                db_persist.refresh(deteccao)
+                deteccao_id = deteccao.id
+                resultado_final = {
+                    "deteccao_id": deteccao_id,
+                    "alimento_id": alimento_yolo.id,
+                    "alimento_nome": alimento_yolo.nome,
+                    "classe_yolo": palpite.get("classe") if palpite else None,
+                    "fonte": "YOLO",
+                    "peso_padrao_kg": float(alimento_yolo.peso_padrao_kg or 0.0),
+                }
+            except Exception as exc:
+                logger.exception("Falha ao inserir detecção preliminar")
+                db_persist.rollback()
+                await websocket.send_json(
+                    {"tipo": "erro", "stage": "io", "mensagem": str(exc)}
+                )
+                estado.reset()
+                continue
+            finally:
+                db_persist.close()
+
+            # 6) Notifica frontend imediatamente — captura segue ininterrupta
             await websocket.send_json({
-                "tipo": "deteccao",
+                "tipo": "deteccao_preliminar",
                 "ts": int(agora * 1000),
+                "deteccao_id": deteccao_id,
                 "yolo": palpite_payload,
-                "gemini": gemini_out,
                 "resultado_final": resultado_final,
                 "imagem_path": imagem_path,
             })
             await websocket.send_json(
                 _log_payload(
                     "resultado",
-                    "Detecção consolidada enviada",
+                    "Detecção preliminar registrada",
+                    deteccao_id=deteccao_id,
                     alimento=resultado_final["alimento_nome"],
-                    fonte=fonte,
                     imagem_path=imagem_path,
                 )
             )
+
+            # 7) Gemini em background (fire-and-forget) ou notificação imediata se OFF
+            if gemini is not None and usar_gemini:
+                asyncio.create_task(
+                    _processar_gemini_em_background(
+                        websocket=websocket,
+                        deteccao_id=deteccao_id,
+                        jpeg_bytes=jpeg_bytes,
+                        palpite=palpite,
+                        classes_validas=classes_validas,
+                        classes_db=classes_db,
+                        gemini=gemini,
+                    )
+                )
+            else:
+                # Gemini desligado/indisponível: fecha o ciclo visual já como "sem_gemini"
+                if usar_gemini and gemini is None:
+                    await websocket.send_json(
+                        _log_payload("gemini", "Gemini indisponível: GEMINI_API_KEY ausente")
+                    )
+                await websocket.send_json({
+                    "tipo": "deteccao_atualizada",
+                    "deteccao_id": deteccao_id,
+                    "gemini": None,
+                    "alimento_id": alimento_yolo.id,
+                    "alimento_nome": None,
+                    "fonte": "YOLO",
+                    "ts": int(time.time() * 1000),
+                })
 
             # Reseta estabilidade — lock continua até expirar
             estado.reset()

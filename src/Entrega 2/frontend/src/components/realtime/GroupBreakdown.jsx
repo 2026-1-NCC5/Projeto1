@@ -11,7 +11,7 @@ export default function GroupBreakdown({ appState, totalKg }) {
         <div className="group-breakdown">
           {appState.map(group => {
             const groupProducts = {};
-            group.items.forEach(item => {
+            (group.items || []).forEach(item => {
               const k = item.name.toLowerCase().trim();
               if (!groupProducts[k]) groupProducts[k] = { name: item.name, kg: 0, count: 0 };
               groupProducts[k].kg += item.weight;
@@ -38,11 +38,11 @@ export default function GroupBreakdown({ appState, totalKg }) {
                     <div className="text-xs text-gray mt-1">Peso</div>
                   </div>
                   <div>
-                    <div className="text-lg font-black text-white" style={{ lineHeight: 1 }}>{group.items.length}</div>
+                    <div className="text-lg font-black text-white" style={{ lineHeight: 1 }}>{group.quantidadeItens ?? group.items.length}</div>
                     <div className="text-xs text-gray mt-1">Itens</div>
                   </div>
                   <div>
-                    <div className="text-lg font-black text-white" style={{ lineHeight: 1 }}>{group.members.length}</div>
+                    <div className="text-lg font-black text-white" style={{ lineHeight: 1 }}>{group.members?.length ?? 0}</div>
                     <div className="text-xs text-gray mt-1">Membros</div>
                   </div>
                 </div>

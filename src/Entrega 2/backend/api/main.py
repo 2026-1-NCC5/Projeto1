@@ -21,6 +21,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from api.routers import (
+    auth,
     deteccoes,
     sessoes,
     relatorios,
@@ -35,15 +36,17 @@ app = FastAPI(
     openapi_url=f"{settings.API_V1_STR}/openapi.json"
 )
 
-# CORS config
+# CORS: cookie exige origins explícitas (evitar "*" com credenciais).
+_origins = [o.strip() for o in settings.CORS_ORIGINS.split(",") if o.strip()]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Adjust for production
+    allow_origins=_origins or ["http://localhost:5173"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
+app.include_router(auth.router, prefix=f"{settings.API_V1_STR}/auth", tags=["auth"])
 app.include_router(grupos.router, prefix=f"{settings.API_V1_STR}/grupos", tags=["grupos"])
 app.include_router(alimentos.router, prefix=f"{settings.API_V1_STR}/alimentos", tags=["alimentos"])
 app.include_router(itens_declarados.router, prefix=f"{settings.API_V1_STR}/itens-declarados", tags=["itens-declarados"])

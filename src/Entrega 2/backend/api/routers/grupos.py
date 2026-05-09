@@ -3,9 +3,10 @@ from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
-from api.dependencies import get_db
+from api.dependencies import get_db, get_admin_atual
 from api.schemas.grupo import GrupoCreate, GrupoUpdate, GrupoResponse
 from bd.models.grupo import Grupo
+from bd.models.usuario import Usuario
 
 router = APIRouter()
 
@@ -15,6 +16,7 @@ def listar_grupos(
     skip: int = 0,
     limit: int = 100,
     db: Session = Depends(get_db),
+    _admin: Usuario = Depends(get_admin_atual),
 ):
     """Lista todos os grupos cadastrados (equipes arrecadadoras)."""
     return db.query(Grupo).order_by(Grupo.criado_em.desc()).offset(skip).limit(limit).all()
@@ -24,6 +26,7 @@ def listar_grupos(
 def criar_grupo(
     grupo_in: GrupoCreate,
     db: Session = Depends(get_db),
+    _admin: Usuario = Depends(get_admin_atual),
 ):
     """Cria um grupo (equipe) que será associado a sessões de auditoria."""
     db_obj = Grupo(
@@ -41,6 +44,7 @@ def criar_grupo(
 def detalhar_grupo(
     id: int,
     db: Session = Depends(get_db),
+    _admin: Usuario = Depends(get_admin_atual),
 ):
     grupo = db.query(Grupo).filter(Grupo.id == id).first()
     if not grupo:
@@ -53,6 +57,7 @@ def atualizar_grupo(
     id: int,
     grupo_in: GrupoUpdate,
     db: Session = Depends(get_db),
+    _admin: Usuario = Depends(get_admin_atual),
 ):
     grupo = db.query(Grupo).filter(Grupo.id == id).first()
     if not grupo:
@@ -73,6 +78,7 @@ def atualizar_grupo(
 def deletar_grupo(
     id: int,
     db: Session = Depends(get_db),
+    _admin: Usuario = Depends(get_admin_atual),
 ):
     grupo = db.query(Grupo).filter(Grupo.id == id).first()
     if not grupo:

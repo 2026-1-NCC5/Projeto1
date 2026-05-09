@@ -1,7 +1,7 @@
 import React from 'react';
 
 // Painel lateral de logs ao vivo (WebSocket / YOLO / API) na CameraScreen.
-export default function ScannerLogPanel({ logs, onLimpar }) {
+export default function ScannerLogPanel({ logs, onLimpar, onOcultar }) {
   return (
     <aside className="scanner-log-panel">
       <div className="scanner-log-header">
@@ -9,7 +9,19 @@ export default function ScannerLogPanel({ logs, onLimpar }) {
           <span className="text-primary text-[10px] font-bold uppercase tracking-widest">Logs ao vivo</span>
           <h3 className="text-white text-sm font-bold">WebSocket / YOLO / API</h3>
         </div>
-        <button className="btn btn-outline btn-small" onClick={onLimpar}>Limpar</button>
+        <div className="scanner-log-header-actions">
+          {typeof onOcultar === 'function' && (
+            <button
+              type="button"
+              className="btn-icon circle-bg-dark border border-gray-medium"
+              onClick={onOcultar}
+              title="Ocultar painel de logs"
+            >
+              <i className="ph ph-eye-slash text-white text-base" aria-hidden></i>
+            </button>
+          )}
+          <button className="btn btn-outline btn-small" onClick={onLimpar}>Limpar</button>
+        </div>
       </div>
       <div className="scanner-log-list">
         {logs.length === 0 ? (

@@ -1,25 +1,69 @@
-import React, { useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import LogoAbrace from '../assets/logo_final_nova.png';
 import { useAppState } from '../context/appStateContextValue';
 import KanbanCard from '../components/KanbanCard';
 import GroupModal from '../components/GroupModal';
 import UserPopup from '../components/UserPopup';
+import {
+  listarGrupos,
+  criarGrupo,
+  atualizarGrupo,
+  excluirGrupo,
+} from '../services/api';
 
 // Tela principal: Kanban de grupos + header com perfil e atalho para
 // visualização gráfica. Disparam câmera/manual e edição de grupos.
 export default function DashboardScreen() {
-  const { appState, setAppState, userData, setCurrentScreen, setActiveGroupId } = useAppState();
+  const { appState, setAppState, userData, setCurrentScreen, setActiveGroupId, addToast, logout } = useAppState();
 
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [isUserPopupOpen, setIsUserPopupOpen] = useState(false);
   const [isCreatingNew, setIsCreatingNew] = useState(false);
   const [editingGroupId, setEditingGroupId] = useState(null);
   const [modalInitial, setModalInitial] = useState({ title: '', members: [] });
+  const syncDoneRef = useRef(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const r = await listarGrupos();
+      if (cancelled) return;
+      if (!r.ok || !Array.isArray(r.data)) {
+        if (r.status !== 401) {
+          addToast('Não foi possível carregar grupos do servidor.', 'warning');
+        }
+        return;
+      }
+      setAppState((prev) => {
+        const merged = r.data.map((apiG) => {
+          const local =
+            prev.find((p) => p.grupoIdBackend === apiG.id)
+            || prev.find((p) => !p.grupoIdBackend && p.title === apiG.nome);
+          return {
+            id: String(apiG.id),
+            title: apiG.nome,
+            members: Array.isArray(local?.members) ? local.members : [],
+            totalKg: local?.totalKg ?? 0,
+            items: Array.isArray(local?.items) ? local.items : [],
+            grupoIdBackend: apiG.id,
+          };
+        });
+        if (!syncDoneRef.current && prev.some((p) => !p.grupoIdBackend)) {
+          syncDoneRef.current = true;
+          addToast('Grupos sincronizados com o servidor.', 'info');
+        }
+        return merged;
+      });
+    })();
+    return () => { cancelled = true; };
+  // Sincronização inicial com o backend ao abrir o painel.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const handleEditGroup = (group) => {
     setIsCreatingNew(false);
-    setEditingGroupId(group.id);
-    setModalInitial({ title: group.title, members: [...group.members] });
+    setEditingGroupId(String(group.id));
+    setModalInitial({ title: group.title, members: [...(group.members || [])] });
     setIsModalOpen(true);
   };
 
@@ -30,30 +74,68 @@ export default function DashboardScreen() {
     setIsModalOpen(true);
   };
 
-  const handleSaveModal = ({ title, members }) => {
+  const handleSaveModal = async ({ title, members }) => {
     if (isCreatingNew) {
-      const maxCode = appState.length > 0 ? Math.max(...appState.map(g => g.id.charCodeAt(0))) : 64;
-      const newId = String.fromCharCode(maxCode + 1) || 'X';
-      setAppState([...appState, {
-        id: newId,
-        title: title || `Grupo ${newId}`,
+      const r = await criarGrupo({
+        nome: (title || 'Novo grupo').trim(),
+        descricao: null,
+        status: 'pendente',
+      });
+      if (!r.ok) {
+        addToast(
+          typeof r.data?.detail === 'string' ? r.data.detail : `Erro ao criar grupo (${r.status})`,
+          'error',
+        );
+        return;
+      }
+      const g = r.data;
+      setAppState((prev) => [...prev, {
+        id: String(g.id),
+        title: g.nome,
         members: [...members],
         totalKg: 0,
-        items: []
+        items: [],
+        grupoIdBackend: g.id,
       }]);
+      addToast('Grupo criado no servidor.', 'success');
     } else {
-      setAppState(appState.map(g => g.id === editingGroupId ? {
-        ...g,
-        title: title || `Grupo ${editingGroupId}`,
-        members: [...members]
-      } : g));
+      const alvo = appState.find((x) => String(x.id) === String(editingGroupId));
+      if (alvo?.grupoIdBackend == null) {
+        addToast('Grupo sem vínculo ao servidor. Recarregue o painel.', 'error');
+        return;
+      }
+      const r = await atualizarGrupo(alvo.grupoIdBackend, {
+        nome: (title || alvo.title).trim(),
+        descricao: null,
+      });
+      if (!r.ok) {
+        addToast(`Erro ao atualizar grupo (${r.status})`, 'error');
+        return;
+      }
+      const g = r.data;
+      const idAlvo = String(editingGroupId);
+      setAppState((prev) => prev.map((gr) => (String(gr.id) === idAlvo ? {
+        ...gr,
+        title: (g?.nome ?? title ?? gr.title),
+        members: Array.isArray(members) ? [...members] : (gr.members || []),
+      } : gr)));
+      addToast('Grupo atualizado.', 'success');
     }
     setIsModalOpen(false);
   };
 
-  const handleDeleteGroup = (id) => {
-    setAppState(appState.filter(g => g.id !== id));
+  const handleDeleteGroup = async (id) => {
+    const alvo = appState.find((x) => String(x.id) === String(id));
+    if (alvo?.grupoIdBackend != null) {
+      const r = await excluirGrupo(alvo.grupoIdBackend);
+      if (!r.ok && r.status !== 404) {
+        addToast(`Erro ao excluir grupo (${r.status})`, 'error');
+        return;
+      }
+    }
+    setAppState((prev) => prev.filter((g) => String(g.id) !== String(id)));
     setIsModalOpen(false);
+    addToast('Grupo removido.', 'success');
   };
 
   const handleStartCount = (groupId) => {
@@ -89,7 +171,7 @@ export default function DashboardScreen() {
           <div className="relative">
             <div className="flex align-center gap-3 cursor-pointer border py-2 px-4 rounded-full border-gray-medium bg-gray-light hover-opacity-100 opacity-80 transition hover-bg-gray-medium" onClick={() => setIsUserPopupOpen(!isUserPopupOpen)}>
               <i className="ph-fill ph-user-circle text-3xl text-primary"></i>
-              <span className="text-sm font-bold text-white mr-1">{userData.nome}</span>
+              <span className="text-sm font-bold text-white mr-1">{userData.nome || 'Admin'}</span>
               <i className="ph ph-caret-down text-gray text-sm"></i>
             </div>
 
@@ -99,6 +181,7 @@ export default function DashboardScreen() {
               userData={userData}
               onIrConfig={handleGoConfig}
               onFechar={() => setIsUserPopupOpen(false)}
+              onSair={logout}
             />
           </div>
         </div>
