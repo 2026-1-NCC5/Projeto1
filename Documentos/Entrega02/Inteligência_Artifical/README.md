@@ -177,7 +177,28 @@ Açúcar e macarrão, por outro lado, apresentam matrizes praticamente limpas, c
   <i>Ground truth (esquerda) e predições do modelo (direita): batch 1</i>
 </p>
 
-### 7.2 Últimos batches de treino
+### 7.2 Inferência em tempo real com estimativa de peso e valor
+ 
+Além da validação estática, o modelo foi testado em tempo real utilizando a câmera do notebook. A cada frame, o sistema identifica os produtos presentes na cena e consulta uma tabela De-Para para estimar o peso total (kg) e o valor de mercado (R$) dos itens detectados — sem necessidade de balança ou sensor adicional.
+ 
+<p align="center">
+  <img src="https://raw.githubusercontent.com/2026-1-NCC5/Projeto1/refs/heads/main/Imagens/Teste_Local.png" width="600"><br>
+  <i>Demonstração em tempo real: detecção de macarrão (75%), feijão (87%) e café (73%), com peso e valor acumulados exibidos no canto superior esquerdo</i>
+</p>
+
+Na cena acima, o modelo detectou três produtos simultaneamente: Dona Benta Penne (macarrão), Camil Feijão Carioca e Melitta Extraforte (café), com o sistema retornando automaticamente **2,0 kg** e **R$ 31,00** como estimativas agregadas. O pipeline roda a **5,26 FPS** na câmera integrada do notebook, viável para uso em demonstrações e protótipos.
+ 
+A tabela De-Para utilizada associa cada classe a um peso e preço fixos de referência:
+ 
+| Classe   | Peso (kg) | Valor (R$) |
+|----------|-----------|------------|
+| arroz    | 5,0       | 25,00      |
+| feijao   | 1,0       | 8,50       |
+| cafe     | 0,5       | 18,00      |
+| macarrao | 0,5       | 4,50       |
+| acucar   | 2,0       | 6,90       |
+
+### 7.3 Últimos batches de treino
 
 <p align="center">
   <img src="https://raw.githubusercontent.com/2026-1-NCC5/Projeto1/refs/heads/main/Imagens/train_batch7502.jpg" width="300">
@@ -188,7 +209,7 @@ Açúcar e macarrão, por outro lado, apresentam matrizes praticamente limpas, c
 
 Nas épocas finais, o modelo demonstra capacidade de detectar múltiplos produtos simultaneamente em cenas complexas, com bounding boxes precisas mesmo em imagens com sobreposição de embalagens e iluminação variada. Detecções com confiança entre 0.8 e 1.0 são frequentes para açúcar, macarrão e arroz, enquanto café e feijão ocasionalmente aparecem com escores mais baixos (~0.3–0.5) em ângulos desfavoráveis.
 
-### 7.3 Casos problemáticos identificados
+### 7.4 Casos problemáticos identificados
 
 Ao analisar visualmente as predições, os padrões de falha identificados na entrega anterior persistem e novos foram observados:
 
