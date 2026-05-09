@@ -2,7 +2,8 @@
 
 O serviço é chamado em todo gatilho de detecção: recebe o frame JPEG do
 momento em que o objeto ficou estável (ROI já isolada pelo YOLO) e devolve uma
-resposta JSON estruturada com a classificação confirmada/corrigida.
+resposta JSON estruturada com a classificação confirmada/corrigida e o peso
+líquido inferido da embalagem quando visível.
 
 Doc oficial: https://ai.google.dev/gemini-api/docs/image-understanding
 """
@@ -18,28 +19,41 @@ logger = logging.getLogger(__name__)
 PROMPT_TEMPLATE = """Voce e um auditor de alimentos arrecadados. Analise a imagem e identifique
 o pacote alimenticio em primeiro plano (no centro do quadro).
 
-CLASSES VALIDAS (use exatamente estes nomes nos campos `classe`):
+CLASSES VALIDAS (use exatamente estes nomes no campo `classe` quando aplicavel):
 {lista_classes}
 
 PALPITE PRELIMINAR DO MODELO LOCAL (YOLO):
 - classe: {yolo_classe}
 - confianca: {yolo_confianca}
 
+PESO DE REFERENCIA ATUAL (cadastro / modelo, em kg — pode estar errado frente a embalagem):
+{peso_referencia_kg}
+
 INSTRUCOES:
-1. Confirme ou corrija o palpite do YOLO observando a imagem.
-2. Se nao houver pacote claramente visivel, retorne classe=null e
-   concorda=false.
-3. Se o palpite do YOLO estiver correto, concorda=true e classe=palpite.
-4. Se o palpite estiver errado mas voce identificar outro item da lista
-   de classes validas, concorda=false e classe=item correto.
-5. Se nao for nenhuma das classes validas, classe=null, concorda=false e
-   justifique.
-6. Confianca qualitativa: "alta" (item nitido e inequivoco), "media"
-   (parcialmente visivel ou marca duvidosa), "baixa" (palpite especulativo).
+1. Confirme ou corrija o palpite do YOLO observando a imagem (`concorda_classe`).
+2. Leia na embalagem a massa liquida / peso neto do produto (ex.: "500g", "1 kg").
+   - Converta para quilogramas no campo `peso_kg` (ex.: 500 g -> 0.5).
+   - Se nao conseguir ler, use `peso_kg`: null e explique em `justificativa`.
+3. Compare `peso_kg` com o PESO DE REFERENCIA acima. Se diferenca relevante (> ~20 g),
+   `concorda_peso` = false; senao true.
+4. Se nao houver pacote claramente visivel, retorne classe=null, concorda_classe=false,
+   peso_kg=null, concorda_peso=false.
+5. Se o palpite de classe estiver correto, concorda_classe=true e classe=palpite.
+6. Se estiver errado mas voce identificar outro item da lista, concorda_classe=false e classe=item correto.
+7. Confianca qualitativa: "alta" | "media" | "baixa".
+8. Se nao conseguir ler a massa liquida na embalagem (borrado, cortado, fora do quadro,
+   reflexo, etc.), use `peso_kg`: null, `concorda_peso`: false e `alerta_revisao_manual`: true.
+   Se leu o peso com confianca, `alerta_revisao_manual`: false.
+
+O campo legado `concorda` deve ser true somente se concorda_classe E concorda_peso forem true.
 
 RESPONDA SOMENTE COM JSON VALIDO no formato:
 {{
   "classe": "<nome da classe valida ou null>",
+  "concorda_classe": <true|false>,
+  "concorda_peso": <true|false>,
+  "peso_kg": <number ou null>,
+  "alerta_revisao_manual": <true|false>,
   "concorda": <true|false>,
   "confianca_qualitativa": "alta" | "media" | "baixa",
   "justificativa": "<frase curta em portugues, max 200 caracteres>"
@@ -69,7 +83,10 @@ class GeminiService:
         self.model = model
 
     def _montar_prompt(
-        self, palpite: Optional[dict[str, Any]], classes_validas: list[str]
+        self,
+        palpite: Optional[dict[str, Any]],
+        classes_validas: list[str],
+        peso_referencia_kg: Optional[float],
     ) -> str:
         if palpite:
             yolo_classe = palpite.get("classe", "nenhum")
@@ -77,10 +94,13 @@ class GeminiService:
         else:
             yolo_classe = "nenhum"
             yolo_conf = "n/a"
+        pr = peso_referencia_kg
+        peso_ref_str = f"{pr:.3f} kg" if pr is not None else "(desconhecido)"
         return PROMPT_TEMPLATE.format(
             lista_classes=", ".join(classes_validas) or "(nenhuma cadastrada)",
             yolo_classe=yolo_classe,
             yolo_confianca=yolo_conf,
+            peso_referencia_kg=peso_ref_str,
         )
 
     def validar(
@@ -88,14 +108,13 @@ class GeminiService:
         frame_jpeg_bytes: bytes,
         palpite_yolo: Optional[dict[str, Any]],
         classes_validas: list[str],
+        peso_referencia_kg: Optional[float] = None,
     ) -> Optional[dict[str, Any]]:
-        """Valida o palpite do YOLO; em caso de falha, retorna None.
+        """Valida o palpite do YOLO e infere peso na embalagem; em caso de falha, None.
 
-        Estrutura esperada do retorno (compatível com o WebSocket):
-        ``{ "classe": str|None, "concorda": bool, "confianca_qualitativa": str,
-            "justificativa": str }``
+        Retorno compatível com o WebSocket; inclui chaves novas e legado `concorda`.
         """
-        prompt = self._montar_prompt(palpite_yolo, classes_validas)
+        prompt = self._montar_prompt(palpite_yolo, classes_validas, peso_referencia_kg)
         try:
             response = self.client.models.generate_content(
                 model=self.model,
@@ -123,10 +142,37 @@ class GeminiService:
             logger.warning("Gemini retornou JSON inválido: %r", texto[:200])
             return None
 
-        # Sanitiza: garante chaves esperadas
+        concorda_classe = bool(data.get("concorda_classe", data.get("concorda", False)))
+
+        raw_peso = data.get("peso_kg")
+        peso_kg: Optional[float]
+        if raw_peso is None or raw_peso == "":
+            peso_kg = None
+        else:
+            try:
+                peso_kg = float(raw_peso)
+            except (TypeError, ValueError):
+                peso_kg = None
+
+        alerta_revisao_manual = bool(data.get("alerta_revisao_manual", False))
+
+        concorda_peso = data.get("concorda_peso")
+        if concorda_peso is None:
+            concorda_peso = peso_kg is not None and not alerta_revisao_manual
+        else:
+            concorda_peso = bool(concorda_peso)
+        if peso_kg is None or alerta_revisao_manual:
+            concorda_peso = False
+
+        concorda = bool(data.get("concorda", concorda_classe and concorda_peso))
+
         return {
             "classe": data.get("classe"),
-            "concorda": bool(data.get("concorda", False)),
+            "concorda_classe": concorda_classe,
+            "concorda_peso": concorda_peso,
+            "peso_kg": peso_kg,
+            "alerta_revisao_manual": alerta_revisao_manual,
+            "concorda": concorda,
             "confianca_qualitativa": data.get("confianca_qualitativa", "baixa"),
             "justificativa": str(data.get("justificativa") or "")[:500],
         }

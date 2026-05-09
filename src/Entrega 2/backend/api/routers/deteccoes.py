@@ -1,4 +1,3 @@
-from typing import List
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from api.dependencies import get_db, get_admin_atual
@@ -54,12 +53,36 @@ def corrigir_deteccao(
     deteccao = db.query(Deteccao).filter(Deteccao.id == id).first()
     if not deteccao:
         raise HTTPException(status_code=404, detail="Detecção não encontrada")
-    
-    deteccao.alimento_id = correcao_in.alimento_id
+
+    if correcao_in.alimento_id is None and correcao_in.peso_kg is None:
+        raise HTTPException(
+            status_code=400,
+            detail="Informe alimento_id ou peso_kg para correção.",
+        )
+
+    if correcao_in.alimento_id is not None:
+        deteccao.alimento_id = correcao_in.alimento_id
+    if correcao_in.peso_kg is not None:
+        deteccao.peso_kg = correcao_in.peso_kg
     deteccao.corrigido_manualmente = True
     deteccao.fonte = "MANUAL"
-    
+    deteccao.revisao_manual_pendente = False
+
     db.add(deteccao)
     db.commit()
     db.refresh(deteccao)
     return deteccao
+
+
+@router.delete("/{id}", status_code=204)
+def excluir_deteccao(
+    id: int,
+    db: Session = Depends(get_db),
+    _admin: Usuario = Depends(get_admin_atual),
+):
+    deteccao = db.query(Deteccao).filter(Deteccao.id == id).first()
+    if not deteccao:
+        raise HTTPException(status_code=404, detail="Detecção não encontrada")
+    db.delete(deteccao)
+    db.commit()
+    return None

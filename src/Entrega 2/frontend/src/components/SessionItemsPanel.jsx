@@ -5,7 +5,12 @@ import SessionItemStatusChip from './SessionItemStatusChip';
 // sessão atual. Não substitui o `DetectionPopup` (card na base e foca no
 // próximo passo) — funciona como "scoreboard" persistente da contagem.
 // Pode ser recolhido horizontalmente mantendo o resumo (itens + peso).
-export default function SessionItemsPanel({ items = [], pesoTotal, onRemoverItem }) {
+export default function SessionItemsPanel({
+  items = [],
+  pesoTotal,
+  onRemoverItem,
+  onRevisarItem,
+}) {
   const [colapsado, setColapsado] = useState(false);
 
   const { totalItens, totalKg, ultimoNome } = useMemo(() => {
@@ -123,10 +128,22 @@ export default function SessionItemsPanel({ items = [], pesoTotal, onRemoverItem
                         status={item.status}
                         nomeOriginal={item.nomeOriginal}
                         nomeAtual={item.name}
+                        justificativaGemini={item.gemini?.justificativa}
                       />
                     )}
                   </div>
                   <span className="session-items-row-weight">+{Number(item.weight || 0).toFixed(1)}<small>kg</small></span>
+                  {onRevisarItem && item.status === 'revisao_pendente' && item.deteccaoId != null ? (
+                    <button
+                      type="button"
+                      className="session-items-row-revisar"
+                      title="Revisar peso e categoria"
+                      aria-label="Revisar item"
+                      onClick={() => onRevisarItem(index)}
+                    >
+                      <i className="ph ph-pencil-simple" />
+                    </button>
+                  ) : null}
                   {onRemoverItem && (
                     <button
                       type="button"

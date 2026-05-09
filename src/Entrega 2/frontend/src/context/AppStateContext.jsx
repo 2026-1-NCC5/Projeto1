@@ -1,7 +1,6 @@
 import React, { useMemo, useState, useEffect, useCallback } from 'react';
 import useToasts from '../hooks/useToasts';
 import { usePersistedAppState, usePersistedSessaoId } from '../hooks/usePersistedAppState';
-import useRealtimeSocket from '../hooks/useRealtimeSocket';
 import { AppStateContext } from './appStateContextValue';
 import { authMe, authLogout, setApiUnauthorizedHandler } from '../services/api';
 
@@ -27,6 +26,7 @@ export function AppStateProvider({ children }) {
   const [appState, setAppState] = usePersistedAppState();
   const [auditSessaoId, setAuditSessaoId] = usePersistedSessaoId();
   const [activeGroupId, setActiveGroupId] = useState(null);
+  const [manualSomenteAcrescentar, setManualSomenteAcrescentar] = useState(false);
   const [authUsuario, setAuthUsuario] = useState(null);
   const [authLoading, setAuthLoading] = useState(true);
   const [userData, setUserData] = useState(() => adminParaUserData(null));
@@ -71,12 +71,6 @@ export function AppStateProvider({ children }) {
     return () => { cancel = true; };
   }, [refreshMe]);
 
-  const realtimeStatus = useRealtimeSocket({
-    ativo: currentScreen === 'realtime',
-    setAppState,
-    addToast,
-  });
-
   const auditSessaoIdParsed = Number(auditSessaoId);
   const auditSessaoIdNumero = Number.isFinite(auditSessaoIdParsed) && auditSessaoIdParsed > 0
     ? auditSessaoIdParsed
@@ -86,14 +80,14 @@ export function AppStateProvider({ children }) {
     currentScreen, setCurrentScreen,
     appState, setAppState,
     activeGroupId, setActiveGroupId,
+    manualSomenteAcrescentar, setManualSomenteAcrescentar,
     auditSessaoId, setAuditSessaoId, auditSessaoIdNumero,
     userData, setUserData,
     authUsuario, authLoading, refreshMe, logout,
     toasts, addToast,
-    realtimeStatus,
   }), [
-    currentScreen, appState, activeGroupId, auditSessaoId, auditSessaoIdNumero,
-    userData, authUsuario, authLoading, toasts, addToast, realtimeStatus,
+    currentScreen, appState, activeGroupId, manualSomenteAcrescentar, auditSessaoId, auditSessaoIdNumero,
+    userData, authUsuario, authLoading, toasts, addToast,
     refreshMe, logout, setAppState, setAuditSessaoId,
   ]);
 

@@ -201,6 +201,26 @@ export async function criarDeteccaoManual({
   return { ok: resp.ok, status: resp.status };
 }
 
+/** Correção manual de alimento e/ou peso de uma detecção existente. */
+export async function corrigirDeteccao(deteccaoId, { alimentoId, pesoKg } = {}) {
+  const body = {};
+  if (alimentoId != null) body.alimento_id = alimentoId;
+  if (pesoKg != null) body.peso_kg = pesoKg;
+  return fetchJson(`/api/v1/deteccoes/${deteccaoId}/correcao`, {
+    method: 'PUT',
+    body: JSON.stringify(body),
+  });
+}
+
+export async function excluirDeteccao(deteccaoId) {
+  const resp = await fetch(`${API_BASE}/api/v1/deteccoes/${deteccaoId}`, {
+    method: 'DELETE',
+    credentials: 'include',
+  });
+  if (resp.status === 401) onUnauthorized();
+  return { ok: resp.ok, status: resp.status };
+}
+
 // Finaliza uma sessão no backend (status -> finalizada).
 export async function finalizarSessao(sessaoIdNumero) {
   const resp = await fetch(`${API_BASE}/api/v1/sessoes/${sessaoIdNumero}/finalizar`, {

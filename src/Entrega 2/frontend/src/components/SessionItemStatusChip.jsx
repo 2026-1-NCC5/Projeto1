@@ -9,7 +9,12 @@ import React from 'react';
 // Usado tanto no SessionItemsPanel (scoreboard à esquerda) quanto na lista
 // interna do DetectionPopup. O componente é defensivo: se `status` não for
 // reconhecido, não renderiza nada.
-export default function SessionItemStatusChip({ status, nomeOriginal, nomeAtual }) {
+export default function SessionItemStatusChip({
+  status,
+  nomeOriginal,
+  nomeAtual,
+  justificativaGemini,
+}) {
   if (!status) return null;
 
   if (status === 'validando') {
@@ -59,6 +64,21 @@ export default function SessionItemStatusChip({ status, nomeOriginal, nomeAtual 
       >
         <i className="ph ph-sparkle"></i>
         sem Gemini
+      </span>
+    );
+  }
+
+  if (status === 'revisao_pendente') {
+    const tip = justificativaGemini && String(justificativaGemini).trim()
+      ? String(justificativaGemini).trim()
+      : 'Peso ilegível ou incerto na imagem — toque no lápis para revisar';
+    return (
+      <span
+        className="session-item-chip session-item-chip--revisao-pendente"
+        title={tip}
+      >
+        <i className="ph-fill ph-warning-octagon"></i>
+        revisar
       </span>
     );
   }

@@ -5,7 +5,11 @@ from sqlalchemy.orm import Session
 from sqlalchemy import func, or_
 from api.dependencies import get_db, get_admin_atual
 from api.schemas.sessao import SessaoCreate, SessaoResponse, SessaoDecisaoFinalRequest
-from api.schemas.relatorio import RelatorioSessao, LinhaAuditoriaSessao
+from api.schemas.relatorio import (
+    RelatorioSessao,
+    LinhaAuditoriaSessao,
+    RevisaoManualItem,
+)
 from bd.models.sessao import Sessao
 from bd.models.usuario import Usuario
 from bd.models.grupo import Grupo
@@ -114,6 +118,26 @@ def _build_relatorio_sessao(sessao: Sessao, db: Session) -> RelatorioSessao:
     total_kg_declarado = float(sum((row[1] for row in declarados.values()), 0.0))
     total_itens_declarados = int(sum((row[0] for row in declarados.values()), 0))
 
+    pend_rows = (
+        db.query(Deteccao, Alimento.nome)
+        .outerjoin(Alimento, Deteccao.alimento_id == Alimento.id)
+        .filter(
+            Deteccao.sessao_id == sessao.id,
+            Deteccao.revisao_manual_pendente.is_(True),
+        )
+        .order_by(Deteccao.id)
+        .all()
+    )
+    revisao_manual_itens = [
+        RevisaoManualItem(
+            deteccao_id=d.id,
+            alimento_nome=nome,
+            imagem_path=d.imagem_path,
+            gemini_justificativa=d.gemini_justificativa,
+        )
+        for d, nome in pend_rows
+    ]
+
     return RelatorioSessao(
         sessao_id=sessao.id,
         grupo_id=sessao.grupo_id,
@@ -125,6 +149,8 @@ def _build_relatorio_sessao(sessao: Sessao, db: Session) -> RelatorioSessao:
         total_itens_declarados=total_itens_declarados,
         divergencias=divergencias,
         linhas=linhas,
+        revisao_manual_pendente_count=len(revisao_manual_itens),
+        revisao_manual_itens=revisao_manual_itens,
     )
 
 @router.post("/", response_model=SessaoResponse)
@@ -171,6 +197,20 @@ def finalizar_sessao(
         raise HTTPException(status_code=404, detail="Sessão não encontrada")
     if sessao.status != "ativa":
         raise HTTPException(status_code=400, detail="Sessão já está finalizada ou cancelada")
+
+    pendentes = (
+        db.query(func.count(Deteccao.id))
+        .filter(
+            Deteccao.sessao_id == id,
+            Deteccao.revisao_manual_pendente.is_(True),
+        )
+        .scalar()
+    )
+    if pendentes and int(pendentes) > 0:
+        raise HTTPException(
+            status_code=400,
+            detail="Existem itens pendentes de revisão manual de peso ou categoria.",
+        )
 
     if sessao.fonte_resultado_final and sessao.total_kg_final is not None and sessao.total_itens_final is not None:
         sessao.total_kg = float(sessao.total_kg_final or 0)
@@ -225,6 +265,20 @@ def decidir_fonte_final_sessao(
         raise HTTPException(status_code=404, detail="Sessão não encontrada")
     if sessao.status != "ativa":
         raise HTTPException(status_code=400, detail="Sessão não está ativa")
+
+    pendentes = (
+        db.query(func.count(Deteccao.id))
+        .filter(
+            Deteccao.sessao_id == id,
+            Deteccao.revisao_manual_pendente.is_(True),
+        )
+        .scalar()
+    )
+    if pendentes and int(pendentes) > 0:
+        raise HTTPException(
+            status_code=400,
+            detail="Existem itens pendentes de revisão manual de peso ou categoria.",
+        )
 
     relatorio = _build_relatorio_sessao(sessao, db)
     if payload.fonte_final == "manual":

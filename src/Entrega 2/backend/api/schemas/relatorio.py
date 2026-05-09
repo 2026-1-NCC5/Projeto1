@@ -1,5 +1,12 @@
-from typing import List
+from typing import List, Optional
 from pydantic import BaseModel
+
+
+class RevisaoManualItem(BaseModel):
+    deteccao_id: int
+    alimento_nome: Optional[str] = None
+    imagem_path: Optional[str] = None
+    gemini_justificativa: Optional[str] = None
 
 
 class RelatorioCategoria(BaseModel):
@@ -37,3 +44,5 @@ class RelatorioSessao(BaseModel):
     total_itens_declarados: int = 0
     divergencias: int = 0
     linhas: List[LinhaAuditoriaSessao] = []
+    revisao_manual_pendente_count: int = 0
+    revisao_manual_itens: List[RevisaoManualItem] = []

@@ -8,7 +8,7 @@ Mensagens servidor → cliente:
 - {"tipo": "preview", "ts": <ms>, "yolo": {...}|null}
 - {"tipo": "status", "estado": "monitorando"|"estavel"|"analisando"|"lock", "lock_ate_ts": <ms>}
 - {"tipo": "deteccao_preliminar", "deteccao_id": int, "yolo": {...}, "resultado_final": {...}, "imagem_path": str, "ts": <ms>}
-- {"tipo": "deteccao_atualizada", "deteccao_id": int, "gemini": {...}|null, "alimento_id": int|null, "alimento_nome": str|null, "fonte": "YOLO"|"GEMINI", "ts": <ms>}
+- {"tipo": "deteccao_atualizada", "deteccao_id": int, "gemini": {...}|null, "alimento_id": int|null, "alimento_nome": str|null, "fonte": "YOLO"|"GEMINI", "peso_kg": float, "revisao_manual_pendente": bool, "ts": <ms>}
 - {"tipo": "log", "stage": str, "mensagem": str, "dados": {...}, "ts": <ms>}
 - {"tipo": "erro", "stage": "yolo"|"gemini"|"io", "mensagem": "..."}
 
@@ -86,6 +86,15 @@ def _log_payload(stage: str, mensagem: str, **dados: Any) -> dict[str, Any]:
     }
 
 
+async def _send_json_ws(websocket: WebSocket, payload: dict[str, Any]) -> bool:
+    """Envia JSON; retorna False se o cliente já fechou (navegação, Strict Mode)."""
+    try:
+        await websocket.send_json(payload)
+        return True
+    except WebSocketDisconnect:
+        return False
+
+
 async def _processar_gemini_em_background(
     websocket: WebSocket,
     deteccao_id: int,
@@ -94,6 +103,7 @@ async def _processar_gemini_em_background(
     classes_validas: list[str],
     classes_db: dict[str, Alimento],
     gemini: Any,
+    peso_referencia_kg: float,
 ) -> None:
     """Roda Gemini em thread separada, atualiza a detecção no banco e
     notifica o cliente via WS (best-effort).
@@ -104,7 +114,11 @@ async def _processar_gemini_em_background(
     """
     try:
         gemini_out = await asyncio.to_thread(
-            gemini.validar, jpeg_bytes, palpite, classes_validas
+            gemini.validar,
+            jpeg_bytes,
+            palpite,
+            classes_validas,
+            peso_referencia_kg,
         )
     except Exception as exc:  # noqa: BLE001
         logger.warning("Gemini falhou em background (det=%s): %s", deteccao_id, exc)
@@ -112,24 +126,43 @@ async def _processar_gemini_em_background(
 
     db = SessionLocal()
     novo_alimento_nome: Optional[str] = None
+    revisao_manual_pendente_flag = False
     try:
         deteccao = db.get(Deteccao, deteccao_id)
         if deteccao is None:
             return
         if gemini_out is not None:
-            deteccao.gemini_concorda = bool(gemini_out.get("concorda"))
+            concorda_classe = bool(
+                gemini_out.get("concorda_classe", gemini_out.get("concorda"))
+            )
+            concorda_peso = bool(gemini_out.get("concorda_peso", False))
+            deteccao.gemini_concorda = bool(concorda_classe and concorda_peso)
             deteccao.gemini_classe = gemini_out.get("classe")
             deteccao.gemini_justificativa = gemini_out.get("justificativa")
-            if not gemini_out.get("concorda") and gemini_out.get("classe"):
+            if not concorda_classe and gemini_out.get("classe"):
                 novo_alimento = classes_db.get(gemini_out["classe"])
                 if novo_alimento is not None and novo_alimento.id != deteccao.alimento_id:
                     deteccao.alimento_id = novo_alimento.id
                     deteccao.fonte = "GEMINI"
                     novo_alimento_nome = novo_alimento.nome
+            pk_g = gemini_out.get("peso_kg")
+            if pk_g is not None:
+                try:
+                    np = float(pk_g)
+                    if np > 0 and abs(np - float(deteccao.peso_kg)) > 1e-4:
+                        deteccao.peso_kg = np
+                        deteccao.fonte = "GEMINI"
+                except (TypeError, ValueError):
+                    pass
+            alerta_rm = bool(gemini_out.get("alerta_revisao_manual", False))
+            peso_inferido = gemini_out.get("peso_kg")
+            deteccao.revisao_manual_pendente = alerta_rm or peso_inferido is None
         db.commit()
         db.refresh(deteccao)
         fonte_atual = deteccao.fonte
         alimento_id_atual = deteccao.alimento_id
+        peso_final = float(deteccao.peso_kg)
+        revisao_manual_pendente_flag = bool(deteccao.revisao_manual_pendente)
     except Exception:
         logger.exception("Falha ao atualizar detecção %s com Gemini", deteccao_id)
         db.rollback()
@@ -137,92 +170,94 @@ async def _processar_gemini_em_background(
     finally:
         db.close()
 
-    try:
-        await websocket.send_json({
+    await _send_json_ws(
+        websocket,
+        {
             "tipo": "deteccao_atualizada",
             "deteccao_id": deteccao_id,
             "gemini": gemini_out,
             "alimento_id": alimento_id_atual,
             "alimento_nome": novo_alimento_nome,
             "fonte": fonte_atual,
+            "peso_kg": peso_final,
+            "revisao_manual_pendente": revisao_manual_pendente_flag,
             "ts": int(time.time() * 1000),
-        })
-    except Exception:
-        # WS pode ter fechado antes do background concluir — ok, o UPDATE persistiu.
-        pass
+        },
+    )
+    # Falha no envio = cliente já desconectou — ok, o UPDATE persistiu.
 
 
 @router.websocket("/auditoria/{sessao_id}")
 async def ws_auditoria(websocket: WebSocket, sessao_id: int):
     await websocket.accept()
 
-    db = SessionLocal()
     try:
-        token = websocket.cookies.get(settings.AUTH_COOKIE_NAME)
-        usuario = auth_obter_usuario_por_token(db, token, renovar_acesso=True)
-        if usuario is None:
-            await websocket.send_json(
-                {
-                    "tipo": "erro",
-                    "stage": "io",
-                    "mensagem": "Não autenticado ou sessão expirada",
-                }
-            )
-            await websocket.close(code=4401)
-            return
+        db = SessionLocal()
+        try:
+            token = websocket.cookies.get(settings.AUTH_COOKIE_NAME)
+            usuario = auth_obter_usuario_por_token(db, token, renovar_acesso=True)
+            if usuario is None:
+                await websocket.send_json(
+                    {
+                        "tipo": "erro",
+                        "stage": "io",
+                        "mensagem": "Não autenticado ou sessão expirada",
+                    }
+                )
+                await websocket.close(code=4401)
+                return
 
-        sessao = db.query(Sessao).filter(Sessao.id == sessao_id).first()
-        if not sessao:
-            await websocket.send_json(
-                {"tipo": "erro", "stage": "io", "mensagem": "Sessão não encontrada"}
-            )
-            await websocket.close(code=4404)
-            return
-        if sessao.status != "ativa":
-            await websocket.send_json(
-                {"tipo": "erro", "stage": "io", "mensagem": "Sessão não está ativa"}
-            )
-            await websocket.close(code=4400)
-            return
-        if sessao.usuario_id is not None and sessao.usuario_id != usuario.id:
-            await websocket.send_json(
-                {
-                    "tipo": "erro",
-                    "stage": "io",
-                    "mensagem": "Sessão de triagem vinculada a outro administrador",
-                }
-            )
-            await websocket.close(code=4403)
-            return
-        classes_db = _hidratar_classes(db)
-    finally:
-        db.close()
+            sessao = db.query(Sessao).filter(Sessao.id == sessao_id).first()
+            if not sessao:
+                await websocket.send_json(
+                    {"tipo": "erro", "stage": "io", "mensagem": "Sessão não encontrada"}
+                )
+                await websocket.close(code=4404)
+                return
+            if sessao.status != "ativa":
+                await websocket.send_json(
+                    {"tipo": "erro", "stage": "io", "mensagem": "Sessão não está ativa"}
+                )
+                await websocket.close(code=4400)
+                return
+            if sessao.usuario_id is not None and sessao.usuario_id != usuario.id:
+                await websocket.send_json(
+                    {
+                        "tipo": "erro",
+                        "stage": "io",
+                        "mensagem": "Sessão de triagem vinculada a outro administrador",
+                    }
+                )
+                await websocket.close(code=4403)
+                return
+            classes_db = _hidratar_classes(db)
+        finally:
+            db.close()
 
-    # Carrega serviços (YOLO é pesado — singleton lazy garante uma única carga).
-    try:
-        yolo = get_yolo_service()
-    except Exception as exc:
-        logger.exception("Falha ao carregar YOLO")
+        # Carrega serviços (YOLO é pesado — singleton lazy garante uma única carga).
+        try:
+            yolo = get_yolo_service()
+        except Exception as exc:
+            logger.exception("Falha ao carregar YOLO")
+            await websocket.send_json(
+                {"tipo": "erro", "stage": "yolo", "mensagem": str(exc)}
+            )
+            await websocket.close(code=4500)
+            return
+        gemini = get_gemini_service()  # pode ser None (modo degradado)
+
+        estado = EstadoSessao()
+        classes_validas = sorted(classes_db.keys())
         await websocket.send_json(
-            {"tipo": "erro", "stage": "yolo", "mensagem": str(exc)}
+            _log_payload(
+                "ws",
+                "WebSocket conectado",
+                sessao_id=sessao_id,
+                classes=len(classes_validas),
+                gemini_disponivel=gemini is not None,
+            )
         )
-        await websocket.close(code=4500)
-        return
-    gemini = get_gemini_service()  # pode ser None (modo degradado)
 
-    estado = EstadoSessao()
-    classes_validas = sorted(classes_db.keys())
-    await websocket.send_json(
-        _log_payload(
-            "ws",
-            "WebSocket conectado",
-            sessao_id=sessao_id,
-            classes=len(classes_validas),
-            gemini_disponivel=gemini is not None,
-        )
-    )
-
-    try:
         while True:
             msg = await websocket.receive_json()
             tipo = msg.get("tipo")
@@ -410,6 +445,7 @@ async def ws_auditoria(websocket: WebSocket, sessao_id: int):
                         classes_validas=classes_validas,
                         classes_db=classes_db,
                         gemini=gemini,
+                        peso_referencia_kg=float(alimento_yolo.peso_padrao_kg or 0.0),
                     )
                 )
             else:
@@ -425,6 +461,8 @@ async def ws_auditoria(websocket: WebSocket, sessao_id: int):
                     "alimento_id": alimento_yolo.id,
                     "alimento_nome": None,
                     "fonte": "YOLO",
+                    "peso_kg": float(alimento_yolo.peso_padrao_kg or 0.0),
+                    "revisao_manual_pendente": False,
                     "ts": int(time.time() * 1000),
                 })
 

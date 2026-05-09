@@ -16,6 +16,7 @@ export default function DetectionPopup({
   onToggleMinimizado,
   onRemoverItem,
   onFinalizar,
+  onRevisarItem,
 }) {
   const popupPositionStyle = { bottom: '40px', left: '50%', transform: 'translateX(-50%)' };
 
@@ -90,11 +91,23 @@ export default function DetectionPopup({
                     status={item.status}
                     nomeOriginal={item.nomeOriginal}
                     nomeAtual={item.name}
+                    justificativaGemini={item.gemini?.justificativa}
                   />
                 )}
               </div>
               <div className="flex align-center gap-2 flex-shrink-0 ml-2">
                 <span className="text-primary font-bold">+{item.weight}kg</span>
+                {onRevisarItem && item.status === 'revisao_pendente' && item.deteccaoId != null ? (
+                  <button
+                    type="button"
+                    className="session-items-row-revisar"
+                    title="Revisar peso e categoria"
+                    aria-label="Revisar item"
+                    onClick={() => onRevisarItem(index)}
+                  >
+                    <i className="ph ph-pencil-simple" />
+                  </button>
+                ) : null}
                 <button className="btn-remove-session-item text-gray transition btn-icon hover:text-red-500" style={{ width: '24px', height: '24px' }}
                   onClick={() => onRemoverItem(index)}>
                   <i className="ph ph-trash"></i>
