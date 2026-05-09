@@ -8,7 +8,15 @@ import cv2
 import numpy as np
 from ultralytics import YOLO
 
-# Define e interpreta os argumentos de entrada do usuário
+# De-Para
+
+PESO_VALOR = {
+    "arroz":    {"peso_kg": 5.0,  "valor_brl": 25.00},
+    "feijao":   {"peso_kg": 1.0,  "valor_brl":  8.50},
+    "acucar":   {"peso_kg": 1.0,  "valor_brl":  6.90},
+    "cafe":     {"peso_kg": 0.5,  "valor_brl": 18.00},
+    "macarrao": {"peso_kg": 0.5,  "valor_brl":  4.50},
+}
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--model', required=True)
@@ -18,26 +26,18 @@ parser.add_argument('--resolution', default=None)
 parser.add_argument('--record', action='store_true')
 args = parser.parse_args()
 
-# Interpreta as entradas do usuário
-
 model_path = args.model
 img_source = args.source
 min_thresh = float(args.thresh)
 user_res = args.resolution
 record = args.record
 
-# Verifica se o arquivo do modelo existe e é válido
-
 if (not os.path.exists(model_path)):
     print('ERRO: O caminho do modelo é inválido ou o modelo não foi encontrado. Verifique se o nome do arquivo foi digitado corretamente.')
     sys.exit(0)
 
-# Carrega o modelo na memória e obtém o mapa de labels
-
 model = YOLO(model_path, task='detect')
 labels = model.names
-
-# Interpreta a entrada para determinar se a fonte é arquivo, pasta, vídeo ou câmera USB
 
 img_ext_list = ['.jpg','.JPG','.jpeg','.JPEG','.png','.PNG','.bmp','.BMP']
 vid_ext_list = ['.avi','.mov','.mp4','.mkv','.wmv']
@@ -63,14 +63,14 @@ else:
     print(f'A entrada {img_source} é inválida. Por favor, tente novamente.')
     sys.exit(0)
 
-# Interpreta a resolução de exibição definida pelo usuário
+# Resolução
 
 resize = False
 if user_res:
     resize = True
     resW, resH = int(user_res.split('x')[0]), int(user_res.split('x')[1])
 
-# Verifica se a gravação é válida e configura o gravador
+# Gravação
 
 if record:
     if source_type not in ['video','usb']:
@@ -80,13 +80,9 @@ if record:
         print('Por favor, especifique a resolução para gravar o vídeo.')
         sys.exit(0)
 
-    # Configura a gravação
-
     record_name = 'demo1.avi'
     record_fps = 30
     recorder = cv2.VideoWriter(record_name, cv2.VideoWriter_fourcc(*'MJPG'), record_fps, (resW,resH))
-
-# Carrega ou inicializa a fonte de imagem
 
 if source_type == 'image':
     imgs_list = [img_source]
@@ -104,7 +100,7 @@ elif source_type == 'video' or source_type == 'usb':
         cap_arg = usb_idx
     cap = cv2.VideoCapture(cap_arg)
 
-    # Define a resolução da câmera ou vídeo se especificada pelo usuário
+    # Defini a resolução
 
     if user_res:
         ret = cap.set(3, resW)
@@ -115,7 +111,7 @@ elif source_type == 'picamera':
     cap.configure(cap.create_video_configuration(main={"format": 'RGB888', "size": (resW, resH)}))
     cap.start()
 
-# Define as cores das caixas delimitadoras
+# Caixas delimitadoras
 
 bbox_colors = [(164,120,87), (68,148,228), (93,97,209), (178,182,133), (88,159,106),
                (96,202,231), (159,124,168), (169,162,241), (98,118,150), (172,176,184)]
@@ -132,12 +128,7 @@ img_count = 0
 while True:
     t_start = time.perf_counter()
 
-    # Carrega o frame da fonte de imagem
-
     if source_type == 'image' or source_type == 'folder':
-
-        # Se a fonte for imagem ou pasta de imagens, carrega a imagem pelo nome do arquivo
-
         if img_count >= len(imgs_list):
             print('Todas as imagens foram processadas. Encerrando o programa.')
             sys.exit(0)
@@ -146,48 +137,35 @@ while True:
         img_count = img_count + 1
 
     elif source_type == 'video':
-
-        # Se a fonte for vídeo, carrega o próximo frame do arquivo
-
         ret, frame = cap.read()
         if not ret:
             print('Fim do arquivo de vídeo atingido. Encerrando o programa.')
             break
 
     elif source_type == 'usb':
-
-        # Se a fonte for câmera USB, captura o frame da câmera
-
         ret, frame = cap.read()
         if (frame is None) or (not ret):
             print('Não foi possível ler frames da câmera. Isso indica que a câmera está desconectada ou não está funcionando. Encerrando o programa.')
             break
 
     elif source_type == 'picamera':
-
-        # Se a fonte for Picamera, captura frames pela interface da picamera
-
         frame = cap.capture_array()
         if (frame is None):
             print('Não foi possível ler frames da Picamera. Isso indica que a câmera está desconectada ou não está funcionando. Encerrando o programa.')
             break
 
-    # Redimensiona o frame para a resolução de exibição desejada
-
     if resize == True:
         frame = cv2.resize(frame,(resW,resH))
 
-    # Executa a inferência no frame
-
     results = model(frame, verbose=False)
-
-    # Extrai os resultados
 
     detections = results[0].boxes
 
-    # Inicializa variável para contagem básica de objetos
+    # Inicializa variáveis de contagem e acumuladores de peso/valor
 
     object_count = 0
+    peso_total   = 0.0
+    valor_total  = 0.0
 
     # Percorre cada detecção e obtém coordenadas, confiança e classe
 
@@ -220,19 +198,25 @@ while True:
             cv2.rectangle(frame, (xmin, label_ymin-labelSize[1]-10), (xmin+labelSize[0], label_ymin+baseLine-10), color, cv2.FILLED)
             cv2.putText(frame, label, (xmin, label_ymin-7), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 1)
 
-            # Exemplo básico: conta o número de objetos na imagem
+            # Acumula peso e valor via De-Para
+            if classname in PESO_VALOR:
+                peso_total  += PESO_VALOR[classname]["peso_kg"]
+                valor_total += PESO_VALOR[classname]["valor_brl"]
 
-            object_count = object_count + 1
+            object_count += 1
 
     # Calcula e desenha a taxa de frames (se usar fonte de vídeo, USB ou Picamera)
 
-    if source_type == 'video' or source_type == 'usb' or source_type == 'picamera':
-        cv2.putText(frame, f'FPS: {avg_frame_rate:0.2f}', (10,20), cv2.FONT_HERSHEY_SIMPLEX, .7, (232,120,55), 2) # Desenha a taxa de frames
+    if source_type in ('video', 'usb', 'picamera'):
+        cv2.putText(frame, f'FPS: {avg_frame_rate:0.2f}', (10,20), cv2.FONT_HERSHEY_SIMPLEX, .7, (232,120,55), 2)
 
-    # Exibe os resultados da detecção
+    # Painel de resultados: objetos, peso e valor
 
-    cv2.putText(frame, f'Numero de objetos: {object_count}', (10,40), cv2.FONT_HERSHEY_SIMPLEX, .7, (232,120,55), 2) # Desenha o total de objetos detectados
-    cv2.imshow('Resultados da deteccao YOLO', frame) # Exibe a imagem
+    cv2.putText(frame, f'Objetos: {object_count}',            (10, 45), cv2.FONT_HERSHEY_SIMPLEX, .7, (232,120,55), 2)
+    cv2.putText(frame, f'Peso:    {peso_total:.1f} kg',       (10, 75), cv2.FONT_HERSHEY_SIMPLEX, .7, (232,120,55), 2)
+    cv2.putText(frame, f'Valor:   R$ {valor_total:.2f}',      (10,105), cv2.FONT_HERSHEY_SIMPLEX, .7, (232,120,55), 2)
+
+    cv2.imshow('Resultados da deteccao YOLO', frame)
 
     if record:
         recorder.write(frame)
@@ -241,7 +225,7 @@ while True:
 
     if source_type == 'image' or source_type == 'folder':
         key = cv2.waitKey()
-    elif source_type == 'video' or source_type == 'usb' or source_type == 'picamera':
+    elif source_type in ('video', 'usb', 'picamera'):
         key = cv2.waitKey(5)
 
     if key == ord('q') or key == ord('Q'):     # Pressione 'q' para sair
@@ -256,13 +240,9 @@ while True:
     t_stop = time.perf_counter()
     frame_rate_calc = float(1/(t_stop - t_start))
 
-    # Adiciona o FPS ao buffer para calcular a média
-
     if len(frame_rate_buffer) >= fps_avg_len:
         temp = frame_rate_buffer.pop(0)
     frame_rate_buffer.append(frame_rate_calc)
-
-    # Calcula o FPS médio dos últimos frames
 
     avg_frame_rate = np.mean(frame_rate_buffer)
 
