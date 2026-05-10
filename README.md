@@ -80,6 +80,8 @@ Além disso, há outras pastas com os devidos arquivos em cada período de entre
 
 ## 🛠️ Tutorial de instalação local
 
+Acesse o tutorial de instalação local no link: [Como rodar localmente?](/Documentos/Tutorial_Instalacao_Local.md)
+
 --- 
 
 ## ⚙️ Ferramentas e tecnologias
