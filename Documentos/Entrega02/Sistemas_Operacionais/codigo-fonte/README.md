@@ -12,9 +12,6 @@ Projeto isolado do AbraceAI principal (captura de alimentos) que vive em `src/En
 
 ## 1. Objetivo
 
-Implementar a proposta descrita em
-[`relatorio_projeto_monitoramento_ia_nuvem.md`](../relatorio_projeto_monitoramento_ia_nuvem.md):
-
 1. **Coletar** CPU / memoria / disco / rede / load de uma instancia Linux.
 2. **Armazenar** o historico (CSV rotacionado por dia).
 3. **Pre-processar** (limpeza, features, rotulos `normal`/`atencao`/`critico`).
@@ -166,8 +163,6 @@ docker compose down
 
 ## 6. Deploy AWS - resumo
 
-> Detalhes completos, custos, troubleshooting e **checklist de teardown** em [`infra/AWS_DEPLOY.md`](infra/AWS_DEPLOY.md).
-
 ### 6.1 Custo (validado via MCP `awspricing`)
 
 | Recurso | On-demand | Free Tier (conta antiga) |
@@ -267,7 +262,6 @@ Conforme combinado com o orientador (PoC academica, custo zero):
 
 ## 11. Referencias
 
-- Relatorio com a especificacao completa: [`relatorio_projeto_monitoramento_ia_nuvem.md`](../relatorio_projeto_monitoramento_ia_nuvem.md).
 - Documentacao AWS Free Tier (pesquisada via MCP `awsknowledge`): https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/ec2-free-tier-usage.html
 - Pricing oficial t3.micro us-east-1 (consultado via MCP `awspricing`): US$ 0.0104/h on-demand.
 - Template CFN validado via MCP `awsiac` (`validate_cloudformation_template`).
