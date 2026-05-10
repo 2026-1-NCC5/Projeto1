@@ -123,3 +123,17 @@ Acesse o tutorial de instalação local no link: [Como rodar localmente?](/Docum
 ![GitHub](https://img.shields.io/badge/GitHub-100000?style=for-the-badge&logo=github&logoColor=white)
 
 ---
+
+## 📋 Licença
+
+**AbraceAI** © 2026 by André Gregório dos Santos, Guilherme Reis Fogolin de Godoy, Pedro Henrique Nascimento Lemos, Yan Cezareto Ramos is licensed under CC BY-NC-ND 4.0
+
+---
+
+## 🎓 Referências 
+
+1. ROKHVA, Shayan; TEIMOURPOUR, Babak; SOLTANI, Amir Hossein. **Computer vision in the food industry: accurate, real-time, and automatic food recognition with pretrained MobileNetV2**. arXiv, 2024. arXiv:2405.11621. Disponível em: https://arxiv.org/abs/2405.11621. Acesso em: 16 fev. 2026.
+
+2. YANG, Yuanyuan; AN, Ruopeng; FANG, Cao; FERRIS, Dan. **Artificial intelligence in food bank and pantry services: a systematic review**. Nutrients, v. 17, n. 9, p. 1461, 26 abr. 2025. DOI: 10.3390/nu17091461. Disponível em: https://www.mdpi.com/2072-6643/17/9/1461. Acesso em: 21 fev. 2026.
+
+3. CARRILLO-ZAPATA, Daniel et al. **Mutual shaping in swarm robotics: user studies in fire and rescue, storage organization, and bridge inspection**. Frontiers in Robotics and AI, v. 7, p. 53, 21 abr. 2020. DOI: 10.3389/frobt.2020.00053. Disponível em: https://www.frontiersin.org/journals/robotics-and-ai/articles/10.3389/frobt.2020.00053/full. Acesso em: 03 mar. 2026.
