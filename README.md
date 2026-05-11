@@ -78,6 +78,12 @@ Além disso, há outras pastas com os devidos arquivos em cada período de entre
 
 ---
 
+## 💻 Versão final
+
+Para acessar a versão final da AbraceAI hospedada na Azure, siga o link: [AbraceAI - Site oficial](https://abraceai-demo.proudwater-7c6d3801.brazilsouth.azurecontainerapps.io).
+
+---
+
 ## 🛠️ Tutorial de instalação local
 
 Acesse o tutorial de instalação local no link: [Como rodar localmente?](/Documentos/Tutorial_Instalacao_Local.md)
